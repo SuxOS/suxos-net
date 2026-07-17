@@ -73,6 +73,30 @@ function methodNotAllowed(allow: string): Response {
 	return errorResponse(405, { error: `method not allowed, expected ${allow}` }, { Allow: allow });
 }
 
+// Basic per-client rate limiting (issue #28 audit finding: "none exists currently").
+// Best-effort fixed-window counter in NAV_CACHE — KV has no atomic increment, so under
+// real concurrency this can undercount, but for a staging Worker with no real traffic
+// yet this is a cheap deterrent against the obvious abuse case, not a hard guarantee.
+const RATE_LIMIT_WINDOW_SECONDS = 60;
+const RATE_LIMIT_MAX_REQUESTS = 60;
+
+function clientIdentity(request: Request): string {
+	return request.headers.get("CF-Connecting-IP") ?? "unknown";
+}
+
+async function checkRateLimit(env: Env, identity: string): Promise<boolean> {
+	const windowBucket = Math.floor(Date.now() / (RATE_LIMIT_WINDOW_SECONDS * 1000));
+	const key = `ratelimit:v1:${identity}:${windowBucket}`;
+	const current = Number(await env.NAV_CACHE.get(key)) || 0;
+	if (current >= RATE_LIMIT_MAX_REQUESTS) return false;
+	await env.NAV_CACHE.put(key, String(current + 1), { expirationTtl: RATE_LIMIT_WINDOW_SECONDS });
+	return true;
+}
+
+function rateLimitedResponse(): Response {
+	return errorResponse(429, { error: "rate limit exceeded, try again shortly" }, { "Retry-After": String(RATE_LIMIT_WINDOW_SECONDS) });
+}
+
 // KV read-through cache for navigator responses (wrangler.jsonc NAV_CACHE). Data is static
 // stub content today, so a short TTL is just about cutting recompute, not correctness —
 // there's no invalidation to get wrong.
@@ -219,6 +243,10 @@ export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		assertStagingAccess(env);
 		const url = new URL(request.url);
+
+		if (url.pathname.startsWith("/api/") && !(await checkRateLimit(env, clientIdentity(request)))) {
+			return rateLimitedResponse();
+		}
 
 		if (url.pathname === "/api/navigator") return handleNavigator(request, env);
 		if (url.pathname === "/api/qa") return handleQa(request);
