@@ -74,11 +74,25 @@ function projectEntry(entry: NavigatorEntry, verbosity: Verbosity): NavigatorEnt
 	return { ...entry, body: rendered.rendered };
 }
 
-export function getNavigatorView(verbosity: Verbosity, timeScope: TimeScope): NavigatorResponse {
+const DAY_MS = 24 * 60 * 60 * 1000;
+const TIME_SCOPE_WINDOW_DAYS: Record<Exclude<TimeScope, "all">, number> = { week: 7, year: 365 };
+
+// "week"/"year" are a trailing window ending at `now` (design doc §2: "a week → the whole
+// span"); "all" passes every entry through untouched.
+function withinTimeScope(entry: NavigatorEntry, timeScope: TimeScope, now: Date): boolean {
+	if (timeScope === "all") return true;
+	const entryMs = new Date(entry.date).getTime();
+	const windowMs = TIME_SCOPE_WINDOW_DAYS[timeScope] * DAY_MS;
+	return entryMs <= now.getTime() && now.getTime() - entryMs <= windowMs;
+}
+
+export function getNavigatorView(verbosity: Verbosity, timeScope: TimeScope, now: Date = new Date()): NavigatorResponse {
 	return {
 		verbosity,
 		timeScope,
-		entries: STUB_ENTRIES.map((entry) => projectEntry(entry, verbosity)),
+		entries: STUB_ENTRIES.filter((entry) => withinTimeScope(entry, timeScope, now)).map((entry) =>
+			projectEntry(entry, verbosity),
+		),
 		generatedAt: new Date().toISOString(),
 	};
 }

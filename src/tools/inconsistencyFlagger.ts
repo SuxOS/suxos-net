@@ -36,10 +36,15 @@ const STOPWORDS = new Set([
 ]);
 
 const NEGATION_MARKERS = [
-	"not", "no", "never", "n't", "without", "isn't", "wasn't", "aren't", "weren't",
-	"doesn't", "didn't", "don't", "won't", "can't", "cannot", "false", "denies",
+	"not", "no", "never", "without", "aren't", "weren't", "cannot", "false", "denies",
 	"denied", "refutes", "refuted",
 ];
+
+// Any "...n't" contraction (isn't, doesn't, didn't, won't, can't, shouldn't, hasn't, ...) is a
+// negation. Matched separately from NEGATION_MARKERS/matchesAnyMarker below because "n't" is
+// inherently a suffix glued onto a preceding word — it never has a word boundary before the
+// "n", so a plain `\bn't\b` marker can never match a real contraction.
+const NEGATION_CONTRACTION_RE = /\b[a-z]+n't\b/;
 
 const TEMPORAL_MARKERS = ["before", "after", "then", "prior to", "later", "subsequently", "preceded", "followed"];
 
@@ -55,14 +60,21 @@ function sharedSignificantTerms(a: string[], b: string[]): string[] {
 	return [...new Set(a)].filter((word) => bSet.has(word));
 }
 
-function hasNegation(text: string): boolean {
+// Word-boundary matching, not raw substring — markers include short strings like "no"
+// and "after" that would otherwise false-match inside unrelated words ("now", "diagnosis",
+// "afternoon"). `\b` is ASCII-word-boundary aware, which is exactly what we want for these
+// English markers; multi-word markers like "prior to" still match across their own spaces.
+function matchesAnyMarker(text: string, markers: string[]): boolean {
 	const lower = text.toLowerCase();
-	return NEGATION_MARKERS.some((marker) => lower.includes(marker));
+	return markers.some((marker) => new RegExp(`\\b${marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(lower));
+}
+
+function hasNegation(text: string): boolean {
+	return NEGATION_CONTRACTION_RE.test(text.toLowerCase()) || matchesAnyMarker(text, NEGATION_MARKERS);
 }
 
 function hasTemporalMarker(text: string): boolean {
-	const lower = text.toLowerCase();
-	return TEMPORAL_MARKERS.some((marker) => lower.includes(marker));
+	return matchesAnyMarker(text, TEMPORAL_MARKERS);
 }
 
 const NOTE_TEMPLATE = (a: string, b: string) =>
