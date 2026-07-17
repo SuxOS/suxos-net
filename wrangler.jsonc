@@ -1,17 +1,20 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	// STAGING ONLY. No live deploy, no real Cloudflare Access recipients, no DNS cutover.
-	// See README.md for local `wrangler dev` instructions and docs/design/suxos-net-design.md
-	// for the full design. This name is deliberately distinct from a future prod Worker name
-	// so a staging deploy can never collide with the real suxos.net cutover.
+	// STAGING ONLY. Deployed live at *.workers.dev for testing — safe because suxvault has
+	// no real content yet (empty structure, deliberately) and every response here is
+	// synthetic/stub data. Still no real Cloudflare Access recipients, no custom DNS, no
+	// suxos.net cutover — those remain a together-step. This name is deliberately distinct
+	// from a future prod Worker name so this staging deploy can never collide with the real
+	// suxos.net cutover. See README.md and docs/design/suxos-net-design.md for the full design.
 	"name": "suxos-net-staging",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-07-17",
 	"compatibility_flags": ["nodejs_compat"],
 	// KV read-through cache for navigator responses, mirroring suxdash's BFF cache pattern
-	// (docs/design/suxdash-command-center-design.md §3). Placeholder id — replace with a real
-	// namespace before any real deploy; `wrangler dev` runs it against local/simulated KV.
-	"kv_namespaces": [{ "binding": "NAV_CACHE", "id": "staging-placeholder-replace-before-deploy" }],
+	// (docs/design/suxdash-command-center-design.md §3). Real staging namespace — safe to
+	// expose live because suxvault holds no real content yet (empty structure only); this
+	// was the deliberate reason for that split. No PHI/PII ever touches this staging KV.
+	"kv_namespaces": [{ "binding": "NAV_CACHE", "id": "bf133ed9581e43349b14fe736768a763" }],
 	"observability": { "enabled": true, "head_sampling_rate": 1 },
 	// Cloudflare Access fronts the whole Worker in real deployments (design doc §4); for
 	// `wrangler dev` there is no Access edge, so ACCESS_STAGING_IDENTITY stands in for the
