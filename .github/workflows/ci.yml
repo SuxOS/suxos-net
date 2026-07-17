@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build (type-check)
+        run: npm run type-check
+
+  # Loop 3 (red-rebase): on a failed PR gate, Claude pushes a fix to the PR branch.
+  autofix:
+    needs: [test]
+    if: needs.test.result == 'failure' && github.event_name == 'pull_request'
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write # OIDC token-exchange for the Claude app
+    uses: SuxOS/.github/.github/workflows/claude-autofix.yml@main
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
+      head-branch: ${{ github.event.pull_request.head.ref }}
+      head-sha: ${{ github.event.pull_request.head.sha }}
+      base-branch: ${{ github.event.pull_request.base.ref }}
+      gates-summary: |
+        npm test · npm run type-check
+    secrets: inherit

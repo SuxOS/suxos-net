@@ -1,0 +1,20 @@
+name: Fixer
+
+# Proposer stage: scans this repo, files bugs/features as issues with confidence labels.
+# Never opens a PR, never queues for build. Deliberately conservative for this repo — no
+# Access/OAuth/content decisions belong to an autonomous proposer here (see design doc).
+# Reusable workflow: SuxOS/.github/.github/workflows/fixer.yml
+
+on:
+  schedule:
+    - cron: "9 10 * * *" # 1/day, offset from sibling repos' fixer.yml crons
+  workflow_dispatch:
+
+jobs:
+  fixer:
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    uses: SuxOS/.github/.github/workflows/fixer.yml@main
+    secrets: inherit

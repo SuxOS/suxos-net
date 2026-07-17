@@ -1,0 +1,28 @@
+name: Issue build
+
+# Collate + build stage: clusters queued-for-build issues, fans out one build session + PR
+# per cluster. confidence:high clusters get `automerge`, the rest `needs-review`.
+# Reusable workflow: SuxOS/.github/.github/workflows/issue-build.yml
+
+on:
+  schedule:
+    - cron: "22 * * * *" # hourly, offset from sibling repos to spread shared-subscription load
+  workflow_dispatch:
+  issues:
+    types: [labeled]
+
+jobs:
+  issue-build:
+    if: github.event_name != 'issues' || contains(fromJSON('["bug","enhancement","documentation"]'), github.event.label.name)
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write
+    uses: SuxOS/.github/.github/workflows/issue-build.yml@main
+    with:
+      model-hint: sonnet
+      gates-summary: |
+        npm test · npm run type-check
+    secrets: inherit

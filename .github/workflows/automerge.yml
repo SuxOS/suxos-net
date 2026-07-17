@@ -1,0 +1,19 @@
+name: Auto-merge
+
+# Enables GitHub native auto-merge on eligible, trusted-author PRs; never force-merges.
+# Reusable workflow: SuxOS/.github/.github/workflows/automerge.yml
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled, edited]
+
+jobs:
+  enable-automerge:
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: SuxOS/.github/.github/workflows/automerge.yml@main
+    with:
+      required-gates: |
+        Test & build
+    secrets: inherit

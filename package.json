@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "echo 'STAGING ONLY — not wired for a real deploy yet; see README.md. Do not run wrangler deploy against this config without a real KV namespace + Access policy.' && exit 1",
+    "deploy": "wrangler deploy",
     "type-check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
