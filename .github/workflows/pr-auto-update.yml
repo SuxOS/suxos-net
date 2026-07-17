@@ -1,0 +1,20 @@
+name: PR auto-update
+
+# Loop 3 (red-rebase): keeps open PR branches from going stale/CONFLICTING as parallel
+# batch-drain PRs land on main — auto-updates each open PR's branch against main so
+# issue-build's overlapping batches (all touching src/index.ts etc.) self-heal instead
+# of requiring a manual rebase every time an earlier batch merges.
+# Reusable workflow: SuxOS/.github/.github/workflows/pr-auto-update.yml
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  pr-auto-update:
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: SuxOS/.github/.github/workflows/pr-auto-update.yml@main
+    secrets: inherit

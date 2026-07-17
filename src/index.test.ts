@@ -118,6 +118,50 @@ describe("POST /api/qa", () => {
 	});
 });
 
+describe("GET /demo (frontend)", () => {
+	it("renders an HTML page, not JSON", async () => {
+		const res = await call("/demo");
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toContain("text/html");
+		const body = await res.text();
+		expect(body).toContain("<title>");
+		expect(body).toContain('id="navigator-entries"');
+		expect(body).toContain('id="qa-form"');
+		expect(body).toContain('id="flags-content"');
+	});
+
+	it("sets a same-origin CSP that still allows the page's own script/style/fetch", async () => {
+		const res = await call("/demo");
+		const csp = res.headers.get("Content-Security-Policy") ?? "";
+		expect(csp).toContain("script-src 'self'");
+		expect(csp).toContain("style-src 'self'");
+		expect(csp).toContain("connect-src 'self'");
+		expect(csp).not.toContain("unsafe-inline");
+	});
+
+	it("returns 405 with an Allow header for a non-GET method", async () => {
+		const res = await call("/demo", { method: "POST" });
+		expect(res.status).toBe(405);
+		expect(res.headers.get("Allow")).toBe("GET");
+	});
+
+	it("serves app.css as CSS", async () => {
+		const res = await call("/demo/app.css");
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toContain("text/css");
+	});
+
+	it("serves app.js as JS", async () => {
+		const res = await call("/demo/app.js");
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toContain("javascript");
+		const body = await res.text();
+		expect(body).toContain("/demo/navigator");
+		expect(body).toContain("/demo/qa");
+		expect(body).toContain("/demo/flags");
+	});
+});
+
 describe("unknown routes", () => {
 	it("returns 404 for an unrecognized path", async () => {
 		const res = await call("/api/does-not-exist");
