@@ -49,10 +49,11 @@ export interface ReviewResponse {
  */
 export function runReview(request: ReviewRequest): ReviewResponse {
 	const { claims, references = [], knownCitationIds } = request;
+	const inconsistencies = findInconsistencies(claims);
 
 	return {
-		inconsistencies: findInconsistencies(claims),
-		groundingSignals: findGroundingSignals(claims),
+		inconsistencies,
+		groundingSignals: findGroundingSignals(claims, inconsistencies),
 		referenceFlags: flagAgainstReferences(claims, references),
 		citationIntegrity: knownCitationIds ? checkCitationIntegrity(claims, knownCitationIds) : null,
 		claimsChecked: claims.length,

@@ -184,12 +184,17 @@ export function findInconsistencies(claims: Claim[]): InconsistencyFlag[] {
  * `findInconsistencies`. That's it — this does not weigh citation quality,
  * independence of sources, or recency.
  *
+ * `precomputedFlags`, if given, is used instead of re-running `findInconsistencies`
+ * — pass in a result you already computed (as `runReview` does) so a single request
+ * doesn't pay for the O(n^2) pairwise comparison twice. Must be `findInconsistencies(claims)`
+ * for the same `claims` array; omit it to have this function compute it itself.
+ *
  * TODO: real corroboration strength needs source-independence and reliability
  * weighting (two citations to the same underlying document aren't independent
  * corroboration), not just a raw citation count. Future work, not this heuristic.
  */
-export function findGroundingSignals(claims: Claim[]): GroundingSignal[] {
-	const flags = findInconsistencies(claims);
+export function findGroundingSignals(claims: Claim[], precomputedFlags?: InconsistencyFlag[]): GroundingSignal[] {
+	const flags = precomputedFlags ?? findInconsistencies(claims);
 	const flaggedClaimIds = new Set<string>();
 	for (const flag of flags) {
 		flaggedClaimIds.add(flag.claimIdA);
