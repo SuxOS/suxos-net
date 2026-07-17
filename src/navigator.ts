@@ -1,6 +1,11 @@
 // The 2D navigator: verbosity axis × time-scope axis, one control instead of
 // separate "timeline" and "report" views (design doc §2). Wide time-scope + high
 // verbosity is self-limiting by the renderer, not by this module.
+//
+// Verbosity rendering itself is delegated to the generic src/tools/verbositySummarizer
+// tool rather than duplicated here.
+
+import { summarizeAtVerbosity, type Verbosity as ToolVerbosity } from "./tools/verbositySummarizer";
 
 export type Verbosity = "bare" | "oneline" | "paragraph" | "narrative";
 export type TimeScope = "week" | "year" | "all";
@@ -50,10 +55,23 @@ const STUB_ENTRIES: NavigatorEntry[] = [
 	},
 ];
 
+// navigator's body-visibility contract differs slightly from the generic tool's:
+// navigator hides body entirely (not just collapses it) at "oneline" too, because the
+// entry's `title` already carries the oneline-equivalent summary here. So both "bare"
+// and "oneline" map to the tool's "bare" for rendering purposes; "narrative" is the
+// tool's "full" (same top-of-scale meaning, different name kept for compatibility).
+function toToolVerbosity(verbosity: Verbosity): ToolVerbosity {
+	if (verbosity === "bare" || verbosity === "oneline") return "bare";
+	if (verbosity === "narrative") return "full";
+	return verbosity;
+}
+
 function projectEntry(entry: NavigatorEntry, verbosity: Verbosity): NavigatorEntry {
-	if (verbosity === "bare") return { ...entry, title: entry.title, body: null };
-	if (verbosity === "oneline") return { ...entry, body: null };
-	return entry;
+	const [rendered] = summarizeAtVerbosity(
+		[{ id: entry.id, date: entry.date, text: entry.body ?? "", citations: entry.citationIds }],
+		toToolVerbosity(verbosity),
+	);
+	return { ...entry, body: rendered.rendered };
 }
 
 export function getNavigatorView(verbosity: Verbosity, timeScope: TimeScope): NavigatorResponse {

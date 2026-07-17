@@ -46,6 +46,34 @@ npm test
 responses (every verbosity × time-scope combination, invalid inputs, the QA stub's
 never-fabricate contract) — not real data.
 
+## Generic tools (`src/tools/`)
+
+Two standalone, reusable tools that operate on abstract structured records/claims, not
+on any real content:
+
+- **`verbositySummarizer.ts`** — the shared verbosity-axis renderer (bare → oneline →
+  paragraph → full) that `navigator.ts` calls into rather than duplicating the logic.
+  Pure function, no I/O.
+- **`inconsistencyFlagger.ts`** — a neutral instrument over an array of claims,
+  checked against two sources:
+  - **Self-consistency** (`findInconsistencies`) — *candidate* pairwise conflicts
+    between claims in the same record (a red flag for a reviewer, e.g. an attorney,
+    to look closer at), plus the complementary green flag (`findGroundingSignals`):
+    claims backed by 2+ independent citations with no detected conflict, useful to a
+    reviewer, e.g. a doctor, checking that their reasoning is well-supported.
+  - **Reference-consistency** (`flagAgainstReferences`) — *candidate* conflicts
+    between a claim and a small, explicitly human-curated set of trusted references
+    (`TrustedReference[]`, a hand-vetted bibliography). This reference set is
+    intentionally never auto-populated from open/general knowledge at runtime — only
+    added to by a human, explicitly — so every reference-consistency flag stays
+    traceable to one specific, named, vetted source.
+
+  None of these functions ever assert anything is true, false, verified, confirmed,
+  valid, or wrong — every output is hedged, pattern-based, and `confidence < 1`. All
+  three are a simple keyword/negation heuristic today, explicitly not real NLP — see
+  the TODO comments in the file for what a production version needs. Deterministic,
+  offline, no LLM calls.
+
 ## Explicitly deferred (not this repo, not tonight)
 
 - **Real content.** `suxvault` stays empty structure until populated with the user present.
