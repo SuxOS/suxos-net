@@ -3,6 +3,8 @@ import { getNavigatorView, isTimeScope, isVerbosity, TIME_SCOPE_VALUES, VERBOSIT
 import { buildDemoNavigatorView } from "./demo/demoNavigator";
 import { askDemoQuestion } from "./demo/demoQa";
 import { buildDemoFlagsView } from "./demo/demoFlags";
+import { isClaim, isTrustedReference, runReview } from "./review";
+import type { TrustedReference } from "./tools/inconsistencyFlagger";
 
 export interface Env {
 	NAV_CACHE: KVNamespace;
@@ -116,6 +118,62 @@ async function handleQa(request: Request): Promise<Response> {
 	return withSecurityHeaders(Response.json(askQuestion(result.question)));
 }
 
+async function handleReview(request: Request): Promise<Response> {
+	if (request.method !== "POST") return methodNotAllowed("POST");
+
+	const contentType = request.headers.get("content-type") ?? "";
+	if (!contentType.includes("application/json")) {
+		return errorResponse(400, { error: "expected Content-Type: application/json", field: "content-type" });
+	}
+
+	let parsed: unknown;
+	try {
+		parsed = await request.json();
+	} catch {
+		return errorResponse(400, { error: "request body must be valid JSON" });
+	}
+
+	if (typeof parsed !== "object" || parsed === null) {
+		return errorResponse(400, { error: "request body must be a JSON object" });
+	}
+	const body = parsed as Record<string, unknown>;
+
+	const claims = body.claims;
+	if (!Array.isArray(claims) || claims.length === 0) {
+		return errorResponse(400, { error: "claims must be a non-empty array", field: "claims" });
+	}
+	if (!claims.every(isClaim)) {
+		return errorResponse(400, {
+			error: "every claim must have a non-empty string id, a string text, and an array of string citations",
+			field: "claims",
+		});
+	}
+
+	let references: TrustedReference[] | undefined;
+	if (body.references !== undefined) {
+		if (!Array.isArray(body.references) || !body.references.every(isTrustedReference)) {
+			return errorResponse(400, {
+				error: "references must be an array of { id, text, source, sourceUrl? }",
+				field: "references",
+			});
+		}
+		references = body.references;
+	}
+
+	let knownCitationIds: string[] | undefined;
+	if (body.knownCitationIds !== undefined) {
+		if (!Array.isArray(body.knownCitationIds) || !body.knownCitationIds.every((c) => typeof c === "string")) {
+			return errorResponse(400, {
+				error: "knownCitationIds must be an array of strings",
+				field: "knownCitationIds",
+			});
+		}
+		knownCitationIds = body.knownCitationIds;
+	}
+
+	return withSecurityHeaders(Response.json(runReview({ claims, references, knownCitationIds })));
+}
+
 async function handleHealthz(request: Request, env: Env): Promise<Response> {
 	if (request.method !== "GET") return methodNotAllowed("GET");
 	return withSecurityHeaders(Response.json({ ok: true, staging: true, identity: env.ACCESS_STAGING_IDENTITY }));
@@ -167,6 +225,7 @@ export default {
 
 		if (url.pathname === "/api/navigator") return handleNavigator(request);
 		if (url.pathname === "/api/qa") return handleQa(request);
+		if (url.pathname === "/api/review") return handleReview(request);
 		if (url.pathname === "/healthz") return handleHealthz(request, env);
 		if (url.pathname === "/demo/navigator") return handleDemoNavigator(request);
 		if (url.pathname === "/demo/qa") return handleDemoQa(request);

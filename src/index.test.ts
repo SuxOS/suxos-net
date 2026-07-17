@@ -118,6 +118,160 @@ describe("POST /api/qa", () => {
 	});
 });
 
+describe("POST /api/review", () => {
+	const CLAIMS = [
+		{
+			id: "claim-a",
+			text: "The synthetic widget was present at the sample facility on the test date.",
+			citations: ["cite-1"],
+		},
+		{
+			id: "claim-b",
+			text: "The synthetic widget was not present at the sample facility on the test date.",
+			citations: ["cite-2"],
+		},
+	];
+
+	it("returns 200 with the aggregated review shape for valid claims", async () => {
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ claims: CLAIMS }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			inconsistencies: unknown[];
+			groundingSignals: unknown[];
+			referenceFlags: unknown[];
+			citationIntegrity: unknown;
+			claimsChecked: number;
+			generatedAt: string;
+		};
+		expect(Array.isArray(body.inconsistencies)).toBe(true);
+		expect(body.inconsistencies.length).toBeGreaterThan(0);
+		expect(Array.isArray(body.groundingSignals)).toBe(true);
+		expect(Array.isArray(body.referenceFlags)).toBe(true);
+		expect(body.citationIntegrity).toBeNull();
+		expect(body.claimsChecked).toBe(2);
+		expect(() => new Date(body.generatedAt).toISOString()).not.toThrow();
+	});
+
+	it("runs citation-integrity checking when knownCitationIds is supplied", async () => {
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ claims: CLAIMS, knownCitationIds: ["cite-1"] }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { citationIntegrity: { clean: boolean; dangling: unknown[] } };
+		expect(body.citationIntegrity.clean).toBe(false);
+		expect(body.citationIntegrity.dangling).toEqual([{ recordId: "claim-b", citationId: "cite-2" }]);
+	});
+
+	it("runs reference flagging when references is supplied", async () => {
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				claims: [CLAIMS[0]],
+				references: [
+					{
+						id: "ref-1",
+						text: "The synthetic widget was not present at the sample facility on the test date.",
+						source: "Fictional Reference Manual",
+					},
+				],
+			}),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { referenceFlags: { claimId: string }[] };
+		expect(body.referenceFlags.length).toBeGreaterThan(0);
+		expect(body.referenceFlags[0].claimId).toBe("claim-a");
+	});
+
+	it("returns a structured 400 when claims is missing", async () => {
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("claims");
+	});
+
+	it("returns a structured 400 when claims is an empty array", async () => {
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ claims: [] }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("claims");
+	});
+
+	it("returns a structured 400 when a claim is malformed", async () => {
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ claims: [{ id: "x" }] }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("claims");
+	});
+
+	it("returns a structured 400 when references is malformed", async () => {
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ claims: CLAIMS, references: [{ id: "ref-1" }] }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("references");
+	});
+
+	it("returns a structured 400 when knownCitationIds is malformed", async () => {
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ claims: CLAIMS, knownCitationIds: [1, 2] }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("knownCitationIds");
+	});
+
+	it("returns a structured 400 for malformed JSON instead of throwing", async () => {
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: "{not json",
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(typeof body.error).toBe("string");
+	});
+
+	it("returns a structured 400 for a missing Content-Type", async () => {
+		const res = await call("/api/review", {
+			method: "POST",
+			body: JSON.stringify({ claims: CLAIMS }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("content-type");
+	});
+
+	it("returns 405 with an Allow header for a non-POST method", async () => {
+		const res = await call("/api/review", { method: "GET" });
+		expect(res.status).toBe(405);
+		expect(res.headers.get("Allow")).toBe("POST");
+	});
+});
+
 describe("unknown routes", () => {
 	it("returns 404 for an unrecognized path", async () => {
 		const res = await call("/api/does-not-exist");
