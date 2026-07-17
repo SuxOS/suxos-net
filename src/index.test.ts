@@ -145,6 +145,12 @@ describe("GET /demo (frontend)", () => {
 		expect(res.headers.get("Allow")).toBe("GET");
 	});
 
+	it("also renders at the trailing-slash path", async () => {
+		const res = await call("/demo/");
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toContain("text/html");
+	});
+
 	it("serves app.css as CSS", async () => {
 		const res = await call("/demo/app.css");
 		expect(res.status).toBe(200);
