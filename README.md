@@ -37,9 +37,12 @@ Routes:
   — the 2D navigator stub (see `src/navigator.ts`).
 - `POST /api/qa` with `{ "question": "..." }` — the QA bot stub (see `src/qa.ts`); always
   returns a `not_implemented` shape, never a fabricated answer or citation.
+- `POST /api/review` with `{ "claims": [...], "references"?: [...], "knownCitationIds"?: [...] }`
+  — the reviewer-facing record-integrity pass (see `src/review.ts`); runs
+  `inconsistencyFlagger.ts` and `citationIntegrity.ts` over the given claims.
 - `GET /healthz`
 
-Full request/response/error shapes for all three routes: [`docs/api.md`](docs/api.md).
+Full request/response/error shapes for all four routes: [`docs/api.md`](docs/api.md).
 
 ## Try it live — fictional demo data
 
@@ -71,16 +74,18 @@ disclaimer.
 npm test
 ```
 
-`src/navigator.test.ts` and `src/qa.test.ts` check the structural shape of the stub
-responses (every verbosity × time-scope combination, invalid inputs, the QA stub's
-never-fabricate contract) — not real data. `src/index.test.ts` exercises the live routing
-layer directly (bad-input 400s, wrong-method 405s, security headers on both success and
-error paths) — see "Production-readiness status" below.
+`src/navigator.test.ts`, `src/qa.test.ts`, and `src/review.test.ts` check the structural
+shape of the stub responses (every verbosity × time-scope combination, invalid inputs,
+the QA stub's never-fabricate contract, the review pass's aggregation of the tools below)
+— not real data. `src/index.test.ts` exercises the live routing layer directly (bad-input
+400s, wrong-method 405s, security headers on both success and error paths) — see
+"Production-readiness status" below.
 
 ## Generic tools (`src/tools/`)
 
 Two standalone, reusable tools that operate on abstract structured records/claims, not
-on any real content:
+on any real content. Both are wired into `POST /api/review` (see `src/review.ts` and
+[`docs/api.md`](docs/api.md)) as well as covered by their own test suites:
 
 - **`verbositySummarizer.ts`** — the shared verbosity-axis renderer (bare → oneline →
   paragraph → full) that `navigator.ts` calls into rather than duplicating the logic.
@@ -126,7 +131,8 @@ on any real content:
 - Methods are restricted per route (`GET`-only navigator/healthz, `POST`-only qa) with
   `405 + Allow` on mismatch rather than silently accepting anything.
 - A dedicated citation-integrity checker (`citationIntegrity.ts`) exists to catch
-  dangling citation references structurally, with test coverage.
+  dangling citation references structurally, with test coverage, and is reachable by a
+  reviewer via `POST /api/review`.
 - `docs/api.md` documents every route's params, response shape, and error shape for
   anyone (including a doctor's or attorney's technical staff) inspecting the API.
 
