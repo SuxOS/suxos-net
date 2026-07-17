@@ -1,15 +1,6 @@
 import { describe, expect, it } from "vitest";
 import worker, { type Env } from "./index";
-
-function createInMemoryKv(): KVNamespace {
-	const store = new Map<string, string>();
-	return {
-		get: async (key: string) => store.get(key) ?? null,
-		put: async (key: string, value: string) => {
-			store.set(key, value);
-		},
-	} as unknown as KVNamespace;
-}
+import { createInMemoryKv } from "./testKv";
 
 const ENV: Env = {
 	NAV_CACHE: createInMemoryKv(),

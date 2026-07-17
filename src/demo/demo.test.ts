@@ -3,9 +3,10 @@ import worker, { type Env } from "../index";
 import { buildDemoNavigatorView } from "./demoNavigator";
 import { askDemoQuestion } from "./demoQa";
 import { buildDemoFlagsView } from "./demoFlags";
+import { createInMemoryKv } from "../testKv";
 
 const ENV: Env = {
-	NAV_CACHE: {} as KVNamespace,
+	NAV_CACHE: createInMemoryKv(),
 	STAGING: "1",
 	ACCESS_STAGING_IDENTITY: "dev@localhost",
 };
