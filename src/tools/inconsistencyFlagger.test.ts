@@ -64,6 +64,23 @@ describe("findInconsistencies", () => {
 		expect(flags).toEqual([]);
 	});
 
+	it("does not treat 'now'/'afternoon'/'diagnosis' as substring matches for negation/temporal markers", () => {
+		const claims: Claim[] = [
+			{ id: "claim-h", text: "Patient is now stable per the diagnosis this afternoon.", citations: ["cite-9"] },
+			{ id: "claim-i", text: "Patient is stable per the diagnosis this afternoon.", citations: ["cite-10"] },
+		];
+		expect(findInconsistencies(claims)).toEqual([]);
+	});
+
+	it("still detects negation via 'n't' contractions not individually listed, e.g. hasn't", () => {
+		const claims: Claim[] = [
+			{ id: "claim-j", text: "The synthetic widget has been present at the sample facility.", citations: ["cite-11"] },
+			{ id: "claim-k", text: "The synthetic widget hasn't been present at the sample facility.", citations: ["cite-12"] },
+		];
+		const flags = findInconsistencies(claims);
+		expect(flags.length).toBeGreaterThan(0);
+	});
+
 	it("never uses assertive or overclaiming language in its output", () => {
 		const flags = findInconsistencies([...CONFLICTING_PAIR, UNRELATED_CLAIM, GROUNDED_CLAIM]);
 		expect(flags.length).toBeGreaterThan(0);
