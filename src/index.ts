@@ -3,6 +3,7 @@ import { getNavigatorView, isTimeScope, isVerbosity, TIME_SCOPE_VALUES, VERBOSIT
 import { buildDemoNavigatorView } from "./demo/demoNavigator";
 import { askDemoQuestion } from "./demo/demoQa";
 import { buildDemoFlagsView } from "./demo/demoFlags";
+import { DEMO_CSS, DEMO_HTML, DEMO_JS } from "./frontend/demoFrontend";
 
 export interface Env {
 	NAV_CACHE: KVNamespace;
@@ -48,6 +49,24 @@ function withSecurityHeaders(response: Response, extraHeaders?: HeadersInit): Re
 
 function errorResponse(status: number, body: ApiError, extraHeaders?: HeadersInit): Response {
 	return withSecurityHeaders(Response.json(body, { status }), extraHeaders);
+}
+
+/**
+ * Security headers for the /demo/* frontend assets (HTML/CSS/JS). The JSON API's
+ * `default-src 'none'` CSP would block the page from loading its own same-origin
+ * script/style/fetch, so this is a separate, still-strict policy: same-origin only,
+ * no 'unsafe-inline' anywhere, no framing.
+ */
+function withFrontendSecurityHeaders(response: Response, contentType: string): Response {
+	const headers = new Headers(response.headers);
+	headers.set("X-Content-Type-Options", "nosniff");
+	headers.set(
+		"Content-Security-Policy",
+		"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+	);
+	headers.set("Referrer-Policy", "no-referrer");
+	headers.set("Content-Type", contentType);
+	return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
 function methodNotAllowed(allow: string): Response {
@@ -160,6 +179,25 @@ async function handleDemoFlags(request: Request): Promise<Response> {
 	return withSecurityHeaders(Response.json(buildDemoFlagsView()));
 }
 
+// --- /demo frontend: the actual rendered 2D navigator UI (verbosity × time-scope,
+// QA pointer-routing, hedged flags) on top of the /demo/navigator, /demo/qa, /demo/flags
+// JSON above — see src/frontend/demoFrontend.ts. Static assets, no server-side state.
+
+function handleDemoPage(request: Request): Response {
+	if (request.method !== "GET") return methodNotAllowed("GET");
+	return withFrontendSecurityHeaders(new Response(DEMO_HTML), "text/html; charset=utf-8");
+}
+
+function handleDemoAppCss(request: Request): Response {
+	if (request.method !== "GET") return methodNotAllowed("GET");
+	return withFrontendSecurityHeaders(new Response(DEMO_CSS), "text/css; charset=utf-8");
+}
+
+function handleDemoAppJs(request: Request): Response {
+	if (request.method !== "GET") return methodNotAllowed("GET");
+	return withFrontendSecurityHeaders(new Response(DEMO_JS), "text/javascript; charset=utf-8");
+}
+
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		assertStagingAccess(env);
@@ -171,6 +209,9 @@ export default {
 		if (url.pathname === "/demo/navigator") return handleDemoNavigator(request);
 		if (url.pathname === "/demo/qa") return handleDemoQa(request);
 		if (url.pathname === "/demo/flags") return handleDemoFlags(request);
+		if (url.pathname === "/demo" || url.pathname === "/demo/") return handleDemoPage(request);
+		if (url.pathname === "/demo/app.css") return handleDemoAppCss(request);
+		if (url.pathname === "/demo/app.js") return handleDemoAppJs(request);
 
 		return withSecurityHeaders(new Response("not found", { status: 404 }));
 	},
