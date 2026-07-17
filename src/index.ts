@@ -73,7 +73,16 @@ function methodNotAllowed(allow: string): Response {
 	return errorResponse(405, { error: `method not allowed, expected ${allow}` }, { Allow: allow });
 }
 
-async function handleNavigator(request: Request): Promise<Response> {
+// KV read-through cache for navigator responses (wrangler.jsonc NAV_CACHE). Data is static
+// stub content today, so a short TTL is just about cutting recompute, not correctness —
+// there's no invalidation to get wrong.
+const NAV_CACHE_TTL_SECONDS = 300;
+
+function navCacheKey(verbosity: string, timeScope: string): string {
+	return `navigator:v1:${verbosity}:${timeScope}`;
+}
+
+async function handleNavigator(request: Request, env: Env): Promise<Response> {
 	if (request.method !== "GET") return methodNotAllowed("GET");
 
 	const url = new URL(request.url);
@@ -93,7 +102,15 @@ async function handleNavigator(request: Request): Promise<Response> {
 		});
 	}
 
-	return withSecurityHeaders(Response.json(getNavigatorView(verbosityRaw, timeScopeRaw)));
+	const cacheKey = navCacheKey(verbosityRaw, timeScopeRaw);
+	const cached = await env.NAV_CACHE.get(cacheKey);
+	if (cached !== null) {
+		return withSecurityHeaders(new Response(cached, { headers: { "Content-Type": "application/json" } }));
+	}
+
+	const body = JSON.stringify(getNavigatorView(verbosityRaw, timeScopeRaw));
+	await env.NAV_CACHE.put(cacheKey, body, { expirationTtl: NAV_CACHE_TTL_SECONDS });
+	return withSecurityHeaders(new Response(body, { headers: { "Content-Type": "application/json" } }));
 }
 
 /**
@@ -203,7 +220,7 @@ export default {
 		assertStagingAccess(env);
 		const url = new URL(request.url);
 
-		if (url.pathname === "/api/navigator") return handleNavigator(request);
+		if (url.pathname === "/api/navigator") return handleNavigator(request, env);
 		if (url.pathname === "/api/qa") return handleQa(request);
 		if (url.pathname === "/healthz") return handleHealthz(request, env);
 		if (url.pathname === "/demo/navigator") return handleDemoNavigator(request);

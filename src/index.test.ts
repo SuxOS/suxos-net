@@ -1,8 +1,18 @@
 import { describe, expect, it } from "vitest";
 import worker, { type Env } from "./index";
 
+function createInMemoryKv(): KVNamespace {
+	const store = new Map<string, string>();
+	return {
+		get: async (key: string) => store.get(key) ?? null,
+		put: async (key: string, value: string) => {
+			store.set(key, value);
+		},
+	} as unknown as KVNamespace;
+}
+
 const ENV: Env = {
-	NAV_CACHE: {} as KVNamespace,
+	NAV_CACHE: createInMemoryKv(),
 	STAGING: "1",
 	ACCESS_STAGING_IDENTITY: "dev@localhost",
 };
