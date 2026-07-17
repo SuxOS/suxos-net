@@ -4,16 +4,7 @@ import { buildDemoNavigatorView } from "./demoNavigator";
 import { askDemoQuestion } from "./demoQa";
 import { buildDemoFlagsView } from "./demoFlags";
 import { buildDemoHighlightsView } from "./demoHighlights";
-
-function createInMemoryKv(): KVNamespace {
-	const store = new Map<string, string>();
-	return {
-		get: async (key: string) => store.get(key) ?? null,
-		put: async (key: string, value: string) => {
-			store.set(key, value);
-		},
-	} as unknown as KVNamespace;
-}
+import { createInMemoryKv } from "../testUtils/kv";
 
 const ENV: Env = {
 	NAV_CACHE: createInMemoryKv(),
