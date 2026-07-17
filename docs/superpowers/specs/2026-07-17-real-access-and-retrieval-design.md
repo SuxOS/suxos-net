@@ -6,18 +6,37 @@ per-individual real access, real retrieval-backed QA, a real rendered frontend, 
 durable per-person audit log. Nothing here is a placeholder — each piece must actually
 work end-to-end before v1.0 closes.
 
-## 1. Access — Cloudflare Access, per-individual real emails
-- Each recipient (care team member, attorney, family member) is added as their own
-  `include: {email: ...}` entry on the existing `portal.suxos.net` Access application
-  policy (currently `operator-only`, single email).
-- Same OTP login mechanism already live and proven for the operator.
-- Cloudflare passes the authenticated identity (email) to the Worker via the
-  `Cf-Access-Authenticated-User-Email` header (or JWT claim) on every request — this
-  becomes the per-person identity for the audit log, at zero extra auth-system cost.
-- No shared logins, no new username/password system. Real recipient emails must be
-  supplied by the user before each person can log in — no self-serve invite flow in v1
-  (rejected: adds token/expiry/acceptance-endpoint complexity for a benefit — self-serve
-  invites — that doesn't apply when recipient emails are already known).
+## 1. Access — REVISED 2026-07-17: real username/password, per individual
+Original plan (per-individual Cloudflare Access emails) assumed every recipient's real
+email was known in advance. That assumption is false — the user doesn't have emails for
+everyone who needs access. Per-individual Cloudflare Access policies require an email
+identity per person, so that mechanism doesn't fully cover the real recipient set. Revised
+design, still real, still per-individual, no stubs:
+
+- **Cloudflare Access stays in place as the operator's own gate** (unchanged,
+  `operator-only`, OTP) — this protects the Worker's admin/config surface.
+- **A real username/password system is added for recipients**, built into the Worker:
+  - Passwords hashed with a real KDF (PBKDF2-HMAC-SHA256 via WebCrypto, or scrypt if
+    available in the Workers runtime — NOT a placeholder hash, NOT plaintext, NOT a
+    reversible encoding). Per-user random salt, stored alongside the hash.
+  - One real account per recipient (per-individual, not shared) — created by the operator
+    (you set an initial username + password per person, out of band, e.g. told to them
+    directly), not self-serve signup (no public registration surface for a portal holding
+    this kind of content).
+  - Session handling via a signed, HttpOnly, Secure session cookie (not a bearer token in
+    localStorage — avoids XSS-exfiltration of the session). Real expiry, real signature
+    verification (HMAC over a server-side secret), not a stub session.
+  - Password storage in KV or D1 (durable, not in-memory) — same store class as the audit
+    log (§5), so both durability requirements land together.
+  - This login identity (the recipient's username) is what feeds the per-individual audit
+    log (§5) — same accountability goal as the original email-based plan, achieved via a
+    different identity source.
+  - A basic password-reset path is needed (operator resets it directly for a recipient who
+    forgets — no email-based reset flow, since email isn't the identity anchor here).
+- Rejected: self-serve signup (no public registration for this content); storing
+  passwords in plaintext or with a non-cryptographic hash (unacceptable for real health/
+  legal data); reusing the Cloudflare Access mechanism for recipients (would require an
+  email identity we don't have for everyone — the whole reason for this revision).
 
 ## 2. Retrieval — Vectorize + Workers AI embeddings
 - suxvault's markdown notes (post-merge, real content) are chunked and embedded using a
@@ -67,12 +86,18 @@ work end-to-end before v1.0 closes.
   not something to automate regardless of how much trust is granted on infrastructure.
 
 ## Explicitly out of scope for this spec
-- Self-serve invite/token flow for recipients (rejected above — not needed given known
-  recipient emails).
-- Real trusted-reference content authoring (separate, human-only workstream).
-- Username/password auth as an alternative to Cloudflare Access (rejected — would
-  duplicate what Access already does correctly, and weakens the existing gate rail
-  unless run in addition to it, at which point there's no benefit).
+- Self-serve invite/token flow for recipients (rejected — no public registration for this
+  content, regardless of access method).
+- Real trusted-reference content authoring (separate, human-only workstream — but see
+  suxos-net#19, now seeded with draft candidates awaiting the user's curation).
+- Email-based password reset (rejected — email isn't the identity anchor for recipient
+  accounts under the revised §1; operator resets directly instead).
+
+## Revision log
+- 2026-07-17: §1 revised from per-individual Cloudflare Access emails to real
+  username/password, because the user does not have real emails for every recipient.
+  The original per-individual-identity goal is unchanged — same accountability
+  requirement, different identity source.
 
 ## Dependencies / sequencing
 1. suxvault PR #1 must merge (real content must exist before embedding it).
