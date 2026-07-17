@@ -60,6 +60,12 @@ events, medications, and citations spanning a few fictional years). It never tou
   `src/tools/`) over the fictional dataset, so you can see an actual conflicting-claim
   flag, an actual grounding signal, an actual reference-consistency flag, and an actual
   dangling-citation flag fire on realistic-shaped data.
+- `GET /demo/highlights` — inline tone + possible-inconsistency highlights (design doc
+  §Feature 4): `toneHighlighter.ts`'s `findToneHighlights` over the fictional testimony
+  documents, plus `inconsistencyFlagger.ts`'s self-consistency/reference-consistency
+  passes over the fictional claims. A testimony document can only ever get a `tone`
+  highlight, never a `possible-inconsistency` one — structurally, since testimony
+  documents are never passed to the inconsistency checks.
 
 Every response from `/demo/*` includes a `notice` field restating that the data is
 fictional. See the top-of-file comment in `src/demo/demoData.ts` for the full
@@ -112,6 +118,11 @@ on any real content:
   citation id exists is a plain structural fact about the data, not an interpretive
   claim, so its output uses plain "missing citation" wording on purpose. Pure
   function, no I/O.
+- **`toneHighlighter.ts`** — `findToneHighlights(sources)`, the tone-highlight half of
+  Feature 4: a curated intensifier/absolutist/hostile-register marker list (not
+  sentiment analysis) flags phrases as "appears strongly worded," descriptive only,
+  never judgmental about the writer. Same hedging contract as `inconsistencyFlagger.ts`
+  — `confidence < 1`, no assertion of fact. Pure function, no I/O.
 
 ## Production-readiness status
 

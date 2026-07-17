@@ -3,6 +3,7 @@ import worker, { type Env } from "../index";
 import { buildDemoNavigatorView } from "./demoNavigator";
 import { askDemoQuestion } from "./demoQa";
 import { buildDemoFlagsView } from "./demoFlags";
+import { buildDemoHighlightsView } from "./demoHighlights";
 
 function createInMemoryKv(): KVNamespace {
 	const store = new Map<string, string>();
@@ -99,6 +100,65 @@ describe("buildDemoFlagsView", () => {
 		expect(view.citationIntegrity.dangling).toEqual([
 			{ recordId: "demo-claim-conflict-b", citationId: "demo-cite-012" },
 		]);
+	});
+});
+
+const FORBIDDEN_HIGHLIGHT_WORDS = ["wrong", "false", "verified", "lying", "lied", "incorrect"];
+
+describe("buildDemoHighlightsView", () => {
+	it("returns hedged highlights with confidence scores, never forbidden assertive language", () => {
+		const view = buildDemoHighlightsView();
+		expect(view.highlights.length).toBeGreaterThan(0);
+		expect(view.notice.toLowerCase()).toContain("fictional");
+		for (const highlight of view.highlights) {
+			expect(highlight.confidence).toBeLessThan(1);
+			const lower = highlight.note.toLowerCase();
+			for (const forbidden of FORBIDDEN_HIGHLIGHT_WORDS) {
+				expect(lower).not.toContain(forbidden);
+			}
+		}
+	});
+
+	it("flags the strongly-worded testimony document with a tone highlight", () => {
+		const view = buildDemoHighlightsView();
+		const toneHighlight = view.highlights.find(
+			(h): h is Extract<typeof h, { type: "tone" }> => h.type === "tone" && h.sourceId === "demo-testimony-001",
+		);
+		expect(toneHighlight).toBeDefined();
+	});
+
+	it("never emits a possible-inconsistency highlight for a testimony document", () => {
+		const view = buildDemoHighlightsView();
+		const testimonyIds = new Set(["demo-testimony-001", "demo-testimony-002"]);
+		const testimonyInconsistencies = view.highlights.filter(
+			(h) => h.type === "possible-inconsistency" && testimonyIds.has(h.sourceId),
+		);
+		expect(testimonyInconsistencies).toEqual([]);
+	});
+
+	it("finds the intentionally-conflicting demo claim pair as a possible-inconsistency highlight", () => {
+		const view = buildDemoHighlightsView();
+		const ids = new Set(
+			view.highlights.filter((h) => h.type === "possible-inconsistency").map((h) => h.sourceId),
+		);
+		expect(ids.has("demo-claim-conflict-a") || ids.has("demo-claim-conflict-b")).toBe(true);
+	});
+});
+
+describe("GET /demo/highlights", () => {
+	it("returns 200 with hedged highlights", async () => {
+		const res = await call("/demo/highlights");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { highlights: unknown[]; notice: string };
+		expect(Array.isArray(body.highlights)).toBe(true);
+		expect(body.highlights.length).toBeGreaterThan(0);
+		expect(body.notice.toLowerCase()).toContain("fictional");
+	});
+
+	it("returns 405 with Allow: GET for a non-GET method", async () => {
+		const res = await call("/demo/highlights", { method: "POST" });
+		expect(res.status).toBe(405);
+		expect(res.headers.get("Allow")).toBe("GET");
 	});
 });
 

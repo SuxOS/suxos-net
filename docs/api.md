@@ -244,14 +244,60 @@ tools" section below for what each tool does and why.
 
 ---
 
+## `GET /demo/highlights`
+
+Inline tone + possible-inconsistency highlights (design doc §Feature 4) over the
+fictional demo dataset — `toneHighlighter` over `demoTestimonyDocuments`, and
+`inconsistencyFlagger`'s self-consistency/reference-consistency passes over
+`demoClaims`, combined into one highlight list. No query parameters; always reflects
+the full demo dataset.
+
+**200 response:**
+
+```json
+{
+  "highlights": [
+    {
+      "type": "tone",
+      "sourceId": "demo-testimony-001",
+      "matchedMarkers": ["absolutely", "unacceptable", "demand"],
+      "confidence": 0.59,
+      "note": "Source demo-testimony-001 appears strongly worded (...) — noted so the reader can weigh tone, not a judgment about the writer."
+    },
+    {
+      "type": "possible-inconsistency",
+      "sourceId": "demo-claim-conflict-a",
+      "relatedId": "demo-claim-conflict-b",
+      "confidence": 0.4,
+      "note": "Claim demo-claim-conflict-a and claim demo-claim-conflict-b appear inconsistent — cite both and let the reader judge."
+    }
+  ],
+  "notice": "FICTIONAL DEMO DATA — not the user's real information. Do not treat as real."
+}
+```
+
+Every `confidence` is always strictly less than `1`. `type: "tone"` highlights only
+ever come from `demoTestimonyDocuments` (the user's own fictional testimony); `type:
+"possible-inconsistency"` highlights only ever come from `demoClaims`/the
+reference-consistency check — a testimony document can never receive a
+`possible-inconsistency` highlight, structurally, since testimony documents are never
+passed to the inconsistency checks. No highlight ever asserts a claim is "wrong,"
+"false," or "verified."
+
+**Errors:** `405` with `Allow: GET` — any method other than `GET`.
+
+---
+
 ## Internal tools (not HTTP routes)
 
-`src/tools/verbositySummarizer.ts`, `src/tools/inconsistencyFlagger.ts`, and
-`src/tools/citationIntegrity.ts` are pure TypeScript functions used internally
-(by `navigator.ts`/`demo/demoNavigator.ts`, by `demo/demoFlags.ts` which exposes
-`inconsistencyFlagger`'s and `citationIntegrity`'s output via `GET /demo/flags` above,
-and by their own test suites) — they are not exposed as standalone HTTP endpoints. See
-the README's "Generic tools" section for what each one does.
+`src/tools/verbositySummarizer.ts`, `src/tools/inconsistencyFlagger.ts`,
+`src/tools/citationIntegrity.ts`, and `src/tools/toneHighlighter.ts` are pure
+TypeScript functions used internally (by `navigator.ts`/`demo/demoNavigator.ts`, by
+`demo/demoFlags.ts` which exposes `inconsistencyFlagger`'s and `citationIntegrity`'s
+output via `GET /demo/flags` above, by `demo/demoHighlights.ts` which exposes
+`toneHighlighter`'s and `inconsistencyFlagger`'s output via `GET /demo/highlights`
+above, and by their own test suites) — they are not exposed as standalone HTTP
+endpoints. See the README's "Generic tools" section for what each one does.
 
 This document covers every route `src/index.ts` on this branch actually serves. Other
 suxos-net branches/PRs may add further routes (e.g. access scoping, an audit log,

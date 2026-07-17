@@ -3,6 +3,7 @@ import { getNavigatorView, isTimeScope, isVerbosity, TIME_SCOPE_VALUES, VERBOSIT
 import { buildDemoNavigatorView } from "./demo/demoNavigator";
 import { askDemoQuestion } from "./demo/demoQa";
 import { buildDemoFlagsView } from "./demo/demoFlags";
+import { buildDemoHighlightsView } from "./demo/demoHighlights";
 import { DEMO_CSS, DEMO_HTML, DEMO_JS } from "./frontend/demoFrontend";
 
 export interface Env {
@@ -220,6 +221,11 @@ async function handleDemoFlags(request: Request): Promise<Response> {
 	return withSecurityHeaders(Response.json(buildDemoFlagsView()));
 }
 
+async function handleDemoHighlights(request: Request): Promise<Response> {
+	if (request.method !== "GET") return methodNotAllowed("GET");
+	return withSecurityHeaders(Response.json(buildDemoHighlightsView()));
+}
+
 // --- /demo frontend: the actual rendered 2D navigator UI (verbosity × time-scope,
 // QA pointer-routing, hedged flags) on top of the /demo/navigator, /demo/qa, /demo/flags
 // JSON above — see src/frontend/demoFrontend.ts. Static assets, no server-side state.
@@ -254,6 +260,7 @@ export default {
 		if (url.pathname === "/demo/navigator") return handleDemoNavigator(request);
 		if (url.pathname === "/demo/qa") return handleDemoQa(request);
 		if (url.pathname === "/demo/flags") return handleDemoFlags(request);
+		if (url.pathname === "/demo/highlights") return handleDemoHighlights(request);
 		if (url.pathname === "/demo" || url.pathname === "/demo/") return handleDemoPage(request);
 		if (url.pathname === "/demo/app.css") return handleDemoAppCss(request);
 		if (url.pathname === "/demo/app.js") return handleDemoAppJs(request);
