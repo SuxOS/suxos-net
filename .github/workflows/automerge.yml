@@ -16,4 +16,5 @@ jobs:
     with:
       required-gates: |
         Test & build
+        security-review
     secrets: inherit
