@@ -5,11 +5,22 @@ import { askDemoQuestion } from "./demo/demoQa";
 import { buildDemoFlagsView } from "./demo/demoFlags";
 import { buildDemoHighlightsView } from "./demo/demoHighlights";
 import { DEMO_CSS, DEMO_HTML, DEMO_JS } from "./frontend/demoFrontend";
+import {
+	handleAdminCreateAccount,
+	handleAdminResetPassword,
+	handleLogin,
+	handleLogout,
+	requireSession,
+	unauthorizedResponse,
+} from "./auth/routes";
 
 export interface Env {
 	NAV_CACHE: KVNamespace;
 	STAGING: string;
 	ACCESS_STAGING_IDENTITY: string;
+	// HMAC signing secret for recipient session cookies (#18). Set via
+	// `wrangler secret put SESSION_SECRET` — never a `vars` entry, never committed.
+	SESSION_SECRET: string;
 }
 
 // TODO: real Cloudflare Access policy (per-recipient OAuth invites) is deferred —
@@ -110,6 +121,9 @@ function navCacheKey(verbosity: string, timeScope: string): string {
 async function handleNavigator(request: Request, env: Env): Promise<Response> {
 	if (request.method !== "GET") return methodNotAllowed("GET");
 
+	const username = await requireSession(request, env);
+	if (!username) return withSecurityHeaders(unauthorizedResponse());
+
 	const url = new URL(request.url);
 	const verbosityRaw = url.searchParams.get("verbosity") ?? "oneline";
 	const timeScopeRaw = url.searchParams.get("timeScope") ?? "week";
@@ -170,8 +184,10 @@ async function extractQuestion(request: Request): Promise<{ question: string } |
 	return { question };
 }
 
-async function handleQa(request: Request): Promise<Response> {
+async function handleQa(request: Request, env: Env): Promise<Response> {
 	if (request.method !== "POST") return methodNotAllowed("POST");
+	const username = await requireSession(request, env);
+	if (!username) return withSecurityHeaders(unauthorizedResponse());
 	const result = await extractQuestion(request);
 	if ("error" in result) return result.error;
 	return withSecurityHeaders(Response.json(askQuestion(result.question)));
@@ -255,7 +271,7 @@ export default {
 		}
 
 		if (url.pathname === "/api/navigator") return handleNavigator(request, env);
-		if (url.pathname === "/api/qa") return handleQa(request);
+		if (url.pathname === "/api/qa") return handleQa(request, env);
 		if (url.pathname === "/healthz") return handleHealthz(request, env);
 		if (url.pathname === "/demo/navigator") return handleDemoNavigator(request);
 		if (url.pathname === "/demo/qa") return handleDemoQa(request);
@@ -264,6 +280,18 @@ export default {
 		if (url.pathname === "/demo" || url.pathname === "/demo/") return handleDemoPage(request);
 		if (url.pathname === "/demo/app.css") return handleDemoAppCss(request);
 		if (url.pathname === "/demo/app.js") return handleDemoAppJs(request);
+
+		// --- Recipient auth (#18) ---
+		if (url.pathname === "/login") return withSecurityHeaders(await handleLogin(request, env));
+		if (url.pathname === "/logout") return withSecurityHeaders(await handleLogout(request));
+
+		// --- Operator-only admin routes: account provisioning + reset. No self-serve
+		// signup exists anywhere in this Worker — these are the only ways an account
+		// is created or a password changed, and both are reachable only inside this
+		// staging Worker's assertStagingAccess gate above (a real deployment fronts
+		// this with the operator's own Cloudflare Access policy, unchanged).
+		if (url.pathname === "/admin/accounts") return withSecurityHeaders(await handleAdminCreateAccount(request, env));
+		if (url.pathname === "/admin/accounts/reset") return withSecurityHeaders(await handleAdminResetPassword(request, env));
 
 		return withSecurityHeaders(new Response("not found", { status: 404 }));
 	},

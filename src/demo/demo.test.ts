@@ -10,6 +10,7 @@ const ENV: Env = {
 	NAV_CACHE: createInMemoryKv(),
 	STAGING: "1",
 	ACCESS_STAGING_IDENTITY: "dev@localhost",
+	SESSION_SECRET: "test-session-secret-do-not-use-in-prod",
 };
 
 function req(path: string, init?: RequestInit): Request {
@@ -214,15 +215,15 @@ describe("GET /demo/flags", () => {
 });
 
 describe("existing /api/* routes are unchanged", () => {
-	it("/api/qa still returns the not_implemented stub shape", async () => {
+	// /api/qa is now gated behind a recipient session (#18, src/auth/routes.ts) —
+	// this test only asserts the auth gate is in effect; index.test.ts covers the
+	// full login -> session -> protected-route flow.
+	it("/api/qa requires a recipient session (no session cookie -> 401)", async () => {
 		const res = await call("/api/qa", {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({ question: "anything" }),
 		});
-		expect(res.status).toBe(200);
-		const body = (await res.json()) as { status: string; citations: unknown[] };
-		expect(body.status).toBe("not_implemented");
-		expect(body.citations).toEqual([]);
+		expect(res.status).toBe(401);
 	});
 });
