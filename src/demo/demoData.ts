@@ -7,7 +7,7 @@
 // None of it resembles the actual user's real history, medications, or providers.
 
 import type { StructuredRecord } from "../tools/verbositySummarizer";
-import type { Claim, TrustedReference } from "../tools/inconsistencyFlagger";
+import type { Claim } from "../tools/inconsistencyFlagger";
 import type { CitationBearingRecord } from "../tools/citationIntegrity";
 
 export const DEMO_PERSONA_NAME = "Jordan Rivers";
@@ -104,32 +104,6 @@ export const demoClaims: Claim[] = [
 		id: "demo-claim-unrelated",
 		text: "A completely unrelated fictional lab panel from a different invented visit came back within range.",
 		citations: ["demo-cite-004"],
-	},
-];
-
-/**
- * A small, explicitly human-curated set of trusted references for flagAgainstReferences
- * to check demoClaims against. Modeled structurally on a drug-interaction reference
- * lookup, but "Fictoprazine", "Xelbutanol", and the fictional metabolic pathway below
- * are entirely invented — not real drug names, not real pharmacology.
- */
-export const demoTrustedReferences: TrustedReference[] = [
-	{
-		id: "demo-ref-001",
-		text: "Fictoprazine is metabolized by the fictional Pathway-Q and interacts with fictional Pathway-Q inhibitors.",
-		source: "FICTIONAL-TEST Formulary Reference, invented edition",
-		sourceUrl: "https://example.invalid/fictional-formulary/fictoprazine",
-	},
-	{
-		id: "demo-ref-002",
-		text: "Xelbutanol has no known fictional interaction with fictional Pathway-Q inhibitors.",
-		source: "FICTIONAL-TEST Formulary Reference, invented edition",
-		sourceUrl: "https://example.invalid/fictional-formulary/xelbutanol",
-	},
-	{
-		id: "demo-ref-003",
-		text: "Fictional-condition-X is not associated with fictional-symptom-B in the invented reference literature used for this demo.",
-		source: "FICTIONAL-TEST Clinical Reference Manual, invented edition",
 	},
 ];
 

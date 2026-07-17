@@ -3,12 +3,16 @@ import worker, { type Env } from "../index";
 import { buildDemoNavigatorView } from "./demoNavigator";
 import { askDemoQuestion } from "./demoQa";
 import { buildDemoFlagsView } from "./demoFlags";
+import { buildDemoReferencesView } from "./demoReferences";
+import { buildDemoAccessWhoamiView } from "./demoAccess";
 
 const ENV: Env = {
 	NAV_CACHE: {} as KVNamespace,
 	STAGING: "1",
 	ACCESS_STAGING_IDENTITY: "dev@localhost",
 };
+
+const ENV_WITH_ACCESS_SCOPING: Env = { ...ENV, ACCESS_SCOPING_ENABLED: "1" };
 
 function req(path: string, init?: RequestInit): Request {
 	return new Request(`https://suxos-net-staging.example.workers.dev${path}`, init);
@@ -149,6 +153,75 @@ describe("GET /demo/flags", () => {
 		expect(body.groundingSignals.length).toBeGreaterThan(0);
 		expect(body.referenceConsistency.length).toBeGreaterThan(0);
 		expect(body.citationIntegrity.clean).toBe(false);
+	});
+});
+
+describe("buildDemoReferencesView", () => {
+	it("returns the curated demo references with curation provenance and the fictional-data notice", () => {
+		const view = buildDemoReferencesView();
+		expect(view.references.length).toBeGreaterThan(0);
+		expect(view.notice.toLowerCase()).toContain("fictional");
+		for (const reference of view.references) {
+			expect(typeof reference.curator).toBe("string");
+			expect(typeof reference.dateAdded).toBe("string");
+		}
+	});
+});
+
+describe("GET /demo/references", () => {
+	it("returns 200 with curated fictional references", async () => {
+		const res = await call("/demo/references");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { references: unknown[]; notice: string };
+		expect(body.references.length).toBeGreaterThan(0);
+		expect(body.notice.toLowerCase()).toContain("fictional");
+	});
+
+	it("returns 405 with Allow: GET for a non-GET method", async () => {
+		const res = await call("/demo/references", { method: "POST" });
+		expect(res.status).toBe(405);
+		expect(res.headers.get("Allow")).toBe("GET");
+	});
+});
+
+describe("buildDemoAccessWhoamiView", () => {
+	it("grants the fictional care-team persona health scope only", () => {
+		const view = buildDemoAccessWhoamiView("demo-care-team@example.invalid");
+		expect(view.scopes).toEqual(["health"]);
+	});
+
+	it("default-denies an identity with no invite", () => {
+		const view = buildDemoAccessWhoamiView("demo-unknown@example.invalid");
+		expect(view.scopes).toEqual([]);
+	});
+});
+
+describe("GET /demo/access/whoami", () => {
+	it("404s when ACCESS_SCOPING_ENABLED is unset", async () => {
+		const res = await call("/demo/access/whoami?identity=demo-care-team@example.invalid");
+		expect(res.status).toBe(404);
+	});
+
+	it("returns the fictional attorney persona's legal scope when the flag is enabled", async () => {
+		const res = await worker.fetch(
+			req("/demo/access/whoami?identity=demo-attorney@example.invalid"),
+			ENV_WITH_ACCESS_SCOPING,
+		);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { identity: string; scopes: string[] };
+		expect(body.scopes).toEqual(["legal"]);
+	});
+
+	it("default-denies an unknown identity even when the flag is enabled", async () => {
+		const res = await worker.fetch(req("/demo/access/whoami?identity=nobody@example.invalid"), ENV_WITH_ACCESS_SCOPING);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { scopes: string[] };
+		expect(body.scopes).toEqual([]);
+	});
+
+	it("returns a structured 400 when identity is missing, even with the flag enabled", async () => {
+		const res = await worker.fetch(req("/demo/access/whoami"), ENV_WITH_ACCESS_SCOPING);
+		expect(res.status).toBe(400);
 	});
 });
 

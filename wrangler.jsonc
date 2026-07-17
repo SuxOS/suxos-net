@@ -20,6 +20,9 @@
 	// `wrangler dev` there is no Access edge, so ACCESS_STAGING_IDENTITY stands in for the
 	// one shared test/dev identity called out in the design doc. Real Access policy config
 	// is deferred — see the TODO in src/index.ts.
-	"vars": { "STAGING": "1", "ACCESS_STAGING_IDENTITY": "dev@localhost" },
+	// ACCESS_SCOPING_ENABLED gates the per-recipient invite + access-scoping layer
+	// (src/access/accessScopes.ts) — additive and off by default; unset/not "1" leaves
+	// every existing route's behavior unchanged. See the TODO in src/index.ts.
+	"vars": { "STAGING": "1", "ACCESS_STAGING_IDENTITY": "dev@localhost", "ACCESS_SCOPING_ENABLED": "0" },
 	"dev": { "port": 8790 }
 }

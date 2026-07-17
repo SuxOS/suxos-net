@@ -4,13 +4,8 @@
 
 import { findInconsistencies, findGroundingSignals, flagAgainstReferences } from "../tools/inconsistencyFlagger";
 import { checkCitationIntegrity } from "../tools/citationIntegrity";
-import {
-	demoClaimsForReferenceCheck,
-	demoClaims,
-	demoCitationBearingRecords,
-	demoKnownCitationIds,
-	demoTrustedReferences,
-} from "./demoData";
+import { demoClaimsForReferenceCheck, demoClaims, demoCitationBearingRecords, demoKnownCitationIds } from "./demoData";
+import { demoTrustedReferences } from "./demoReferences";
 
 const NOTICE = "FICTIONAL DEMO DATA — not the user's real information. Do not treat as real.";
 

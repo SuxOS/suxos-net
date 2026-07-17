@@ -124,3 +124,34 @@ describe("unknown routes", () => {
 		expect(res.status).toBe(404);
 	});
 });
+
+describe("GET /admin/audit-log", () => {
+	it("records /api/navigator and /api/qa reads and returns them read-only", async () => {
+		await call("/api/navigator?verbosity=oneline&timeScope=week");
+		await call("/api/qa", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ question: "What happened in March?" }),
+		});
+
+		const res = await call("/admin/audit-log");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { entries: Array<{ route: string; identity: string }> };
+		expect(body.entries.some((e) => e.route === "/api/navigator")).toBe(true);
+		expect(body.entries.some((e) => e.route === "/api/qa")).toBe(true);
+		expect(body.entries.every((e) => e.identity === "dev@localhost")).toBe(true);
+	});
+
+	it("returns 405 with Allow: GET for a non-GET method", async () => {
+		const res = await call("/admin/audit-log", { method: "POST" });
+		expect(res.status).toBe(405);
+		expect(res.headers.get("Allow")).toBe("GET");
+	});
+});
+
+describe("GET /demo/access/whoami (feature-flagged)", () => {
+	it("404s when ACCESS_SCOPING_ENABLED is unset, same as any unknown route", async () => {
+		const res = await call("/demo/access/whoami?identity=demo-care-team@example.invalid");
+		expect(res.status).toBe(404);
+	});
+});
