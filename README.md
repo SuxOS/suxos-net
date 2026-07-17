@@ -8,12 +8,15 @@ invited audience, same auth model as `suxdash` (Cloudflare Access). Full design:
 
 ## Status: staging only
 
-This repo is a minimal Worker skeleton. **No real content, no real deploy.** `suxvault` is
-currently empty structure, so every entry this Worker returns is an obviously-synthetic
-placeholder ("Sample Event A", etc.) — never treat anything in `src/navigator.ts` as real.
+This repo is a Worker deployed live at `https://suxos-net-staging.colinxs.workers.dev`
+(real deploy, real KV namespace) — but with **no real content**. `suxvault` is currently
+empty structure, so every entry this Worker returns is an obviously-synthetic placeholder
+("Sample Event A", etc.) — never treat anything in `src/navigator.ts` as real. See
+"Production-readiness status" below for exactly what is and isn't hardened.
 
-Do not run `npm run deploy` / `wrangler deploy` against this config. It intentionally has no
-real KV namespace id and no Cloudflare Access policy attached.
+`npm run deploy` runs `wrangler deploy` against this staging Worker's existing name
+(`suxos-net-staging` in `wrangler.jsonc`) — safe because there's still no real content, no
+real Cloudflare Access policy, and no custom DNS attached.
 
 ## Local dev
 
@@ -36,6 +39,8 @@ Routes:
   returns a `not_implemented` shape, never a fabricated answer or citation.
 - `GET /healthz`
 
+Full request/response/error shapes for all three routes: [`docs/api.md`](docs/api.md).
+
 ## Tests
 
 ```
@@ -44,7 +49,9 @@ npm test
 
 `src/navigator.test.ts` and `src/qa.test.ts` check the structural shape of the stub
 responses (every verbosity × time-scope combination, invalid inputs, the QA stub's
-never-fabricate contract) — not real data.
+never-fabricate contract) — not real data. `src/index.test.ts` exercises the live routing
+layer directly (bad-input 400s, wrong-method 405s, security headers on both success and
+error paths) — see "Production-readiness status" below.
 
 ## Generic tools (`src/tools/`)
 
@@ -73,6 +80,48 @@ on any real content:
   three are a simple keyword/negation heuristic today, explicitly not real NLP — see
   the TODO comments in the file for what a production version needs. Deterministic,
   offline, no LLM calls.
+- **`citationIntegrity.ts`** — `checkCitationIntegrity(records, knownCitationIds)`
+  walks any citation-bearing record (either a `citationIds` or `citations` field) and
+  flags citation ids that don't resolve against a known citation set — catching
+  dangling/broken citation links before a reader sees a claim silently pointing at
+  nothing. Unlike `inconsistencyFlagger.ts`, this one is **not** hedged: whether a
+  citation id exists is a plain structural fact about the data, not an interpretive
+  claim, so its output uses plain "missing citation" wording on purpose. Pure
+  function, no I/O.
+
+## Production-readiness status
+
+**Code-quality hardening that's in place today:**
+
+- Every HTTP route validates its inputs explicitly and returns a structured
+  `{ error, field? }` 400 instead of ever throwing/500ing on bad input (`src/index.ts`,
+  tested in `src/index.test.ts`).
+- Every response carries `X-Content-Type-Options`, `Content-Security-Policy`, and
+  `Referrer-Policy` headers — reasonable defaults ahead of real Access, not a
+  replacement for it.
+- Methods are restricted per route (`GET`-only navigator/healthz, `POST`-only qa) with
+  `405 + Allow` on mismatch rather than silently accepting anything.
+- A dedicated citation-integrity checker (`citationIntegrity.ts`) exists to catch
+  dangling citation references structurally, with test coverage.
+- `docs/api.md` documents every route's params, response shape, and error shape for
+  anyone (including a doctor's or attorney's technical staff) inspecting the API.
+
+**Deliberately still deferred — "production-grade code" is not the same claim as
+"ready to receive real medical/legal content," and this repo does not conflate the
+two:**
+
+- **No real Cloudflare Access / OAuth.** This staging Worker has zero authentication
+  today — anyone with the URL can call every route. Per-recipient invites are a
+  separate, later step (design doc §4).
+- **No real content.** `suxvault` stays empty structure; every response is synthetic
+  stub data.
+- **No custom domain / DNS cutover to `suxos.net`.**
+- **No real QA retrieval.** `src/qa.ts` is still a stub pending F-005/F-028.
+- **The heuristics in `inconsistencyFlagger.ts` are not real NLP** — see the TODOs in
+  that file.
+
+Do not treat this Worker as safe to receive real personal, medical, or legal content
+until the Access/OAuth item above is closed, with the user present.
 
 ## Explicitly deferred (not this repo, not tonight)
 
