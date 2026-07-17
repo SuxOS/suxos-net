@@ -145,6 +145,14 @@ async function handleQa(request: Request): Promise<Response> {
 const MAX_CLAIMS = 200;
 const MAX_REFERENCES = 200;
 
+// Array-length caps alone don't bound the cost of tokenize()/matchesAnyMarker() in
+// inconsistencyFlagger.ts, which run several regexes over every claim/reference `text`
+// — a handful of multi-megabyte `text` strings is just as much a runaway-cost payload
+// as too many small ones. Cap each field's length too.
+const MAX_TEXT_LENGTH = 10_000;
+const MAX_CITATIONS_PER_CLAIM = 50;
+const MAX_CITATION_LENGTH = 500;
+
 async function handleReview(request: Request): Promise<Response> {
 	if (request.method !== "POST") return methodNotAllowed("POST");
 
@@ -178,6 +186,24 @@ async function handleReview(request: Request): Promise<Response> {
 			field: "claims",
 		});
 	}
+	if (claims.some((claim) => claim.text.length > MAX_TEXT_LENGTH)) {
+		return errorResponse(400, {
+			error: `each claim's text must not exceed ${MAX_TEXT_LENGTH} characters`,
+			field: "claims",
+		});
+	}
+	if (claims.some((claim) => claim.citations.length > MAX_CITATIONS_PER_CLAIM)) {
+		return errorResponse(400, {
+			error: `each claim's citations must not exceed ${MAX_CITATIONS_PER_CLAIM} entries`,
+			field: "claims",
+		});
+	}
+	if (claims.some((claim) => claim.citations.some((citation) => citation.length > MAX_CITATION_LENGTH))) {
+		return errorResponse(400, {
+			error: `each citation id must not exceed ${MAX_CITATION_LENGTH} characters`,
+			field: "claims",
+		});
+	}
 
 	let references: TrustedReference[] | undefined;
 	if (body.references !== undefined) {
@@ -190,6 +216,12 @@ async function handleReview(request: Request): Promise<Response> {
 		if (body.references.length > MAX_REFERENCES) {
 			return errorResponse(400, {
 				error: `references must not exceed ${MAX_REFERENCES} entries`,
+				field: "references",
+			});
+		}
+		if (body.references.some((reference) => reference.text.length > MAX_TEXT_LENGTH)) {
+			return errorResponse(400, {
+				error: `each reference's text must not exceed ${MAX_TEXT_LENGTH} characters`,
 				field: "references",
 			});
 		}

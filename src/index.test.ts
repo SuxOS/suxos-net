@@ -255,6 +255,55 @@ describe("POST /api/review", () => {
 		expect(body.field).toBe("claims");
 	});
 
+	it("returns a structured 400 when a claim's text exceeds the length cap", async () => {
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ claims: [{ id: "claim-a", text: "x".repeat(10_001), citations: [] }] }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("claims");
+	});
+
+	it("returns a structured 400 when a claim's citations exceeds the per-claim cap", async () => {
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				claims: [{ id: "claim-a", text: "text", citations: Array.from({ length: 51 }, (_, i) => `cite-${i}`) }],
+			}),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("claims");
+	});
+
+	it("returns a structured 400 when a citation id exceeds the length cap", async () => {
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ claims: [{ id: "claim-a", text: "text", citations: ["x".repeat(501)] }] }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("claims");
+	});
+
+	it("returns a structured 400 when a reference's text exceeds the length cap", async () => {
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				claims: CLAIMS,
+				references: [{ id: "ref-1", text: "x".repeat(10_001), source: "Fictional Reference Manual" }],
+			}),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("references");
+	});
+
 	it("returns a structured 400 when references exceeds the 200-entry cap", async () => {
 		const tooManyReferences = Array.from({ length: 201 }, (_, i) => ({
 			id: `ref-${i}`,
