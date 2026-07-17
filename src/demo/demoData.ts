@@ -167,3 +167,25 @@ export const demoCitationBearingRecords: CitationBearingRecord[] = [
 	...demoClaims.map((c) => ({ id: c.id, citations: c.citations })),
 	{ id: demoClaimAgainstReference.id, citations: demoClaimAgainstReference.citations },
 ];
+
+/**
+ * Fictional user-testimony documents (e.g. a family email, in the user's own words) —
+ * distinct from demoRecords (fictional clinical notes) because testimony is where
+ * Feature 4's tone-highlighting is meant to apply, and where the "never flag the
+ * user's own testimony as an incorrect claim" rail matters most. One entry uses
+ * deliberately strongly-worded, invented language to exercise findToneHighlights.
+ */
+export const demoTestimonyDocuments: StructuredRecord[] = [
+	{
+		id: "demo-testimony-001",
+		date: "2024-04-02",
+		text: "A fictional family email, invented for this demo: I am absolutely furious and I refuse to accept another fictional delay — this is completely unacceptable and I demand a fictional resolution immediately.",
+		citations: ["demo-cite-014"],
+	},
+	{
+		id: "demo-testimony-002",
+		date: "2024-04-09",
+		text: "A second fictional testimony entry, invented for this demo: the fictional follow-up call went as scheduled and covered the fictional next steps.",
+		citations: ["demo-cite-015"],
+	},
+];
