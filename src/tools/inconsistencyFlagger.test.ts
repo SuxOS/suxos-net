@@ -124,6 +124,30 @@ describe("findGroundingSignals", () => {
 			expect(signal.confidence).toBeLessThan(1);
 		}
 	});
+
+	it("given precomputedFlags, produces the same result as recomputing internally", () => {
+		const claims = [GROUNDED_CLAIM, UNRELATED_CLAIM, ...CONFLICTING_PAIR];
+		const flags = findInconsistencies(claims);
+		expect(findGroundingSignals(claims, flags)).toEqual(findGroundingSignals(claims));
+	});
+
+	it("actually uses precomputedFlags rather than ignoring them", () => {
+		// A conflict-free claims array would normally ground claim-a (2 distinct citations,
+		// no conflict) — passing in an unrelated flag that names claim-a proves the passed-in
+		// flags are what's consulted, not a freshly-recomputed set.
+		const conflictFreeClaims: Claim[] = [{ ...CONFLICTING_PAIR[0], citations: ["cite-1", "cite-1b"] }];
+		const fabricatedFlag = {
+			claimIdA: "claim-a",
+			claimIdB: "claim-z",
+			relation: "appearsInconsistentWith" as const,
+			confidence: 0.5,
+			note: "synthetic test flag",
+		};
+		expect(findGroundingSignals(conflictFreeClaims).find((s) => s.claimId === "claim-a")).toBeDefined();
+		expect(
+			findGroundingSignals(conflictFreeClaims, [fabricatedFlag]).find((s) => s.claimId === "claim-a"),
+		).toBeUndefined();
+	});
 });
 
 // SYNTHETIC / TEST fixtures only — a fabricated placeholder reference, not a real

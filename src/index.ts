@@ -88,12 +88,15 @@ async function handleNavigator(request: Request, env: Env): Promise<Response> {
 	const cacheKey = navCacheKey(verbosityRaw, timeScopeRaw);
 	const cached = await env.NAV_CACHE.get(cacheKey);
 	if (cached !== null) {
-		return withSecurityHeaders(new Response(cached, { headers: { "Content-Type": "application/json" } }));
+		const entries = JSON.parse(cached) as ReturnType<typeof getNavigatorView>["entries"];
+		return withSecurityHeaders(
+			Response.json({ verbosity: verbosityRaw, timeScope: timeScopeRaw, entries, generatedAt: new Date().toISOString() }),
+		);
 	}
 
-	const body = JSON.stringify(getNavigatorView(verbosityRaw, timeScopeRaw));
-	await env.NAV_CACHE.put(cacheKey, body, { expirationTtl: NAV_CACHE_TTL_SECONDS });
-	return withSecurityHeaders(new Response(body, { headers: { "Content-Type": "application/json" } }));
+	const view = getNavigatorView(verbosityRaw, timeScopeRaw);
+	await env.NAV_CACHE.put(cacheKey, JSON.stringify(view.entries), { expirationTtl: NAV_CACHE_TTL_SECONDS });
+	return withSecurityHeaders(Response.json(view));
 }
 
 /**
@@ -135,6 +138,13 @@ async function handleQa(request: Request): Promise<Response> {
 	return withSecurityHeaders(Response.json(askQuestion(result.question)));
 }
 
+// review's inconsistency/reference-flagging tools are O(claims^2) and O(claims x
+// references) respectively (see src/tools/inconsistencyFlagger.ts) and this route has
+// no auth in front of it yet (see assertStagingAccess above) — cap array sizes so a
+// caller can't force a runaway comparison just by posting a large payload.
+const MAX_CLAIMS = 200;
+const MAX_REFERENCES = 200;
+
 async function handleReview(request: Request): Promise<Response> {
 	if (request.method !== "POST") return methodNotAllowed("POST");
 
@@ -159,6 +169,9 @@ async function handleReview(request: Request): Promise<Response> {
 	if (!Array.isArray(claims) || claims.length === 0) {
 		return errorResponse(400, { error: "claims must be a non-empty array", field: "claims" });
 	}
+	if (claims.length > MAX_CLAIMS) {
+		return errorResponse(400, { error: `claims must not exceed ${MAX_CLAIMS} entries`, field: "claims" });
+	}
 	if (!claims.every(isClaim)) {
 		return errorResponse(400, {
 			error: "every claim must have a non-empty string id, a string text, and an array of string citations",
@@ -171,6 +184,12 @@ async function handleReview(request: Request): Promise<Response> {
 		if (!Array.isArray(body.references) || !body.references.every(isTrustedReference)) {
 			return errorResponse(400, {
 				error: "references must be an array of { id, text, source, sourceUrl? }",
+				field: "references",
+			});
+		}
+		if (body.references.length > MAX_REFERENCES) {
+			return errorResponse(400, {
+				error: `references must not exceed ${MAX_REFERENCES} entries`,
 				field: "references",
 			});
 		}

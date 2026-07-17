@@ -134,13 +134,13 @@ user's word for it"). Wires the four pure tools in `src/tools/` —
 }
 ```
 
-- `claims` (required): a non-empty array of `{ id, text, citations, confidence? }`.
-  `id` and `text` are strings (`id` non-empty), `citations` is an array of strings,
-  `confidence` if present is a number.
+- `claims` (required): a non-empty array of `{ id, text, citations, confidence? }`,
+  capped at 200 entries. `id` and `text` are strings (`id` non-empty), `citations` is
+  an array of strings, `confidence` if present is a number.
 - `references` (optional): a hand-curated bibliography, `{ id, text, source, sourceUrl? }[]`,
-  compared against every claim via `flagAgainstReferences`. Defaults to `[]` (no
-  reference-consistency flags) when omitted — this endpoint never pulls references from
-  open/general knowledge at runtime.
+  capped at 200 entries, compared against every claim via `flagAgainstReferences`.
+  Defaults to `[]` (no reference-consistency flags) when omitted — this endpoint never
+  pulls references from open/general knowledge at runtime.
 - `knownCitationIds` (optional): the authoritative set of citation ids to check every
   claim's own citations against via `checkCitationIntegrity`. Omitted rather than
   defaulted — with `suxvault` currently empty there is no real citation authority this
@@ -179,9 +179,10 @@ whether a citation id resolves is a fact about the data, not an interpretive cla
 - `400 { "error": "...", "field": "content-type" }` — missing/wrong `Content-Type`.
 - `400 { "error": "request body must be valid JSON" }` — malformed JSON body.
 - `400 { "error": "request body must be a JSON object" }` — body isn't a JSON object.
-- `400 { "error": "...", "field": "claims" }` — `claims` missing, empty, or containing
-  a malformed claim.
-- `400 { "error": "...", "field": "references" }` — `references` present but malformed.
+- `400 { "error": "...", "field": "claims" }` — `claims` missing, empty, over 200
+  entries, or containing a malformed claim.
+- `400 { "error": "...", "field": "references" }` — `references` present but malformed
+  or over 200 entries.
 - `400 { "error": "...", "field": "knownCitationIds" }` — `knownCitationIds` present but
   not an array of strings.
 - `405` with `Allow: POST` — any method other than `POST`.

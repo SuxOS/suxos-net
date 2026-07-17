@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "./index";
 
 function createInMemoryKv(): KVNamespace {
@@ -65,6 +65,24 @@ describe("GET /api/navigator", () => {
 		const res = await call("/api/navigator", { method: "POST" });
 		expect(res.status).toBe(405);
 		expect(res.headers.get("Allow")).toBe("GET");
+	});
+
+	it("re-stamps generatedAt on a cache hit instead of returning the cache-fill time", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2026-02-01T00:00:00Z"));
+			const first = await call("/api/navigator?timeScope=all");
+			const firstBody = (await first.json()) as { generatedAt: string; entries: unknown[] };
+
+			vi.setSystemTime(new Date("2026-02-01T00:05:00Z"));
+			const second = await call("/api/navigator?timeScope=all");
+			const secondBody = (await second.json()) as { generatedAt: string; entries: unknown[] };
+
+			expect(secondBody.entries).toEqual(firstBody.entries);
+			expect(new Date(secondBody.generatedAt).getTime()).toBeGreaterThan(new Date(firstBody.generatedAt).getTime());
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 
@@ -219,6 +237,38 @@ describe("POST /api/review", () => {
 		expect(res.status).toBe(400);
 		const body = (await res.json()) as { error: string; field?: string };
 		expect(body.field).toBe("claims");
+	});
+
+	it("returns a structured 400 when claims exceeds the 200-entry cap", async () => {
+		const tooManyClaims = Array.from({ length: 201 }, (_, i) => ({
+			id: `claim-${i}`,
+			text: `Synthetic claim number ${i}.`,
+			citations: [],
+		}));
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ claims: tooManyClaims }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("claims");
+	});
+
+	it("returns a structured 400 when references exceeds the 200-entry cap", async () => {
+		const tooManyReferences = Array.from({ length: 201 }, (_, i) => ({
+			id: `ref-${i}`,
+			text: `Synthetic reference number ${i}.`,
+			source: "Fictional Reference Manual",
+		}));
+		const res = await call("/api/review", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ claims: CLAIMS, references: tooManyReferences }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("references");
 	});
 
 	it("returns a structured 400 when a claim is malformed", async () => {
