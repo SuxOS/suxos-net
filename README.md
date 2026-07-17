@@ -41,6 +41,30 @@ Routes:
 
 Full request/response/error shapes for all three routes: [`docs/api.md`](docs/api.md).
 
+## Try it live — fictional demo data
+
+`suxvault` stays empty, so to show the pipeline actually working end-to-end there's a
+self-contained, obviously-fictional demo dataset baked into this repo
+(`src/demo/demoData.ts` — a made-up persona, "Jordan Rivers," with invented dates,
+events, medications, and citations spanning a few fictional years). It never touches
+`suxvault` and is completely separate from the real (still-empty) `/api/*` routes above.
+
+- `GET /demo/navigator?verbosity=<bare|oneline|paragraph|narrative>&timeScope=<week|year|all>`
+  — the real navigator/verbositySummarizer pipeline over the fictional dataset. Try:
+  https://suxos-net-staging.colinxs.workers.dev/demo/navigator?verbosity=oneline&timeScope=year
+- `POST /demo/qa` with `{ "question": "..." }` — simple keyword-match retrieval (not an
+  LLM call) over the fictional records/claims, returning real cited matches. Demonstrates
+  the "pointer, not chat" concept (design doc §3) end-to-end.
+- `GET /demo/flags` — runs `findInconsistencies`, `findGroundingSignals`,
+  `flagAgainstReferences`, and `checkCitationIntegrity` (all the real tools from
+  `src/tools/`) over the fictional dataset, so you can see an actual conflicting-claim
+  flag, an actual grounding signal, an actual reference-consistency flag, and an actual
+  dangling-citation flag fire on realistic-shaped data.
+
+Every response from `/demo/*` includes a `notice` field restating that the data is
+fictional. See the top-of-file comment in `src/demo/demoData.ts` for the full
+disclaimer.
+
 ## Tests
 
 ```

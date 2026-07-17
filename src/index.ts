@@ -1,5 +1,8 @@
 import { askQuestion } from "./qa";
 import { getNavigatorView, isTimeScope, isVerbosity, TIME_SCOPE_VALUES, VERBOSITY_VALUES } from "./navigator";
+import { buildDemoNavigatorView } from "./demo/demoNavigator";
+import { askDemoQuestion } from "./demo/demoQa";
+import { buildDemoFlagsView } from "./demo/demoFlags";
 
 export interface Env {
 	NAV_CACHE: KVNamespace;
@@ -74,39 +77,87 @@ async function handleNavigator(request: Request): Promise<Response> {
 	return withSecurityHeaders(Response.json(getNavigatorView(verbosityRaw, timeScopeRaw)));
 }
 
-async function handleQa(request: Request): Promise<Response> {
-	if (request.method !== "POST") return methodNotAllowed("POST");
-
+/**
+ * Shared body-parsing for the two `{ "question": "..." }` POST routes (/api/qa and
+ * /demo/qa) — returns either the validated question string or the 400 to send back.
+ */
+async function extractQuestion(request: Request): Promise<{ question: string } | { error: Response }> {
 	const contentType = request.headers.get("content-type") ?? "";
 	if (!contentType.includes("application/json")) {
-		return errorResponse(400, { error: "expected Content-Type: application/json", field: "content-type" });
+		return { error: errorResponse(400, { error: "expected Content-Type: application/json", field: "content-type" }) };
 	}
 
 	let parsed: unknown;
 	try {
 		parsed = await request.json();
 	} catch {
-		return errorResponse(400, { error: "request body must be valid JSON" });
+		return { error: errorResponse(400, { error: "request body must be valid JSON" }) };
 	}
 
 	if (typeof parsed !== "object" || parsed === null) {
-		return errorResponse(400, { error: "request body must be a JSON object" });
+		return { error: errorResponse(400, { error: "request body must be a JSON object" }) };
 	}
 
 	const question = (parsed as Record<string, unknown>).question;
 	if (typeof question !== "string") {
-		return errorResponse(400, { error: "missing or non-string question", field: "question" });
+		return { error: errorResponse(400, { error: "missing or non-string question", field: "question" }) };
 	}
 	if (question.trim().length === 0) {
-		return errorResponse(400, { error: "question must not be empty", field: "question" });
+		return { error: errorResponse(400, { error: "question must not be empty", field: "question" }) };
 	}
 
-	return withSecurityHeaders(Response.json(askQuestion(question)));
+	return { question };
+}
+
+async function handleQa(request: Request): Promise<Response> {
+	if (request.method !== "POST") return methodNotAllowed("POST");
+	const result = await extractQuestion(request);
+	if ("error" in result) return result.error;
+	return withSecurityHeaders(Response.json(askQuestion(result.question)));
 }
 
 async function handleHealthz(request: Request, env: Env): Promise<Response> {
 	if (request.method !== "GET") return methodNotAllowed("GET");
 	return withSecurityHeaders(Response.json({ ok: true, staging: true, identity: env.ACCESS_STAGING_IDENTITY }));
+}
+
+// --- /demo/* routes: obviously-fictional demo dataset (see src/demo/demoData.ts),
+// exercising the real navigator/inconsistencyFlagger/citationIntegrity pipeline.
+// Additive only — the bare /api/* routes above are unchanged.
+
+async function handleDemoNavigator(request: Request): Promise<Response> {
+	if (request.method !== "GET") return methodNotAllowed("GET");
+
+	const url = new URL(request.url);
+	const verbosityRaw = url.searchParams.get("verbosity") ?? "oneline";
+	const timeScopeRaw = url.searchParams.get("timeScope") ?? "all";
+
+	if (!isVerbosity(verbosityRaw)) {
+		return errorResponse(400, {
+			error: `invalid verbosity; expected one of ${VERBOSITY_VALUES.join(", ")}`,
+			field: "verbosity",
+		});
+	}
+	if (!isTimeScope(timeScopeRaw)) {
+		return errorResponse(400, {
+			error: `invalid timeScope; expected one of ${TIME_SCOPE_VALUES.join(", ")}`,
+			field: "timeScope",
+		});
+	}
+
+	return withSecurityHeaders(Response.json(buildDemoNavigatorView(verbosityRaw, timeScopeRaw)));
+}
+
+async function handleDemoQa(request: Request): Promise<Response> {
+	if (request.method !== "POST") return methodNotAllowed("POST");
+	const result = await extractQuestion(request);
+	if ("error" in result) return result.error;
+	return withSecurityHeaders(Response.json(askDemoQuestion(result.question)));
+}
+
+async function handleDemoFlags(request: Request): Promise<Response> {
+	if (request.method !== "GET") return methodNotAllowed("GET");
+	return withSecurityHeaders(Response.json(buildDemoFlagsView()));
 }
 
 export default {
@@ -117,6 +168,9 @@ export default {
 		if (url.pathname === "/api/navigator") return handleNavigator(request);
 		if (url.pathname === "/api/qa") return handleQa(request);
 		if (url.pathname === "/healthz") return handleHealthz(request, env);
+		if (url.pathname === "/demo/navigator") return handleDemoNavigator(request);
+		if (url.pathname === "/demo/qa") return handleDemoQa(request);
+		if (url.pathname === "/demo/flags") return handleDemoFlags(request);
 
 		return withSecurityHeaders(new Response("not found", { status: 404 }));
 	},
