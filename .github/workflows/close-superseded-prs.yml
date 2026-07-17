@@ -1,0 +1,75 @@
+name: Close superseded sibling PRs
+
+# Sibling PRs from the same issue-build batch sometimes chain (a later builder
+# merges an earlier sibling's branch to reach code it needs), which leaves the
+# earlier PR fully contained in the later one's history. Nothing closes those
+# automatically today, so this walks all open bot PRs and closes any whose
+# head commit is a merged-in ancestor of another still-open bot PR's head.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  close-superseded:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect and close fully-superseded sibling PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          prs_json=$(gh pr list --state open --json number,headRefName,baseRefName,author \
+            -q '[.[] | select(.author.login == "suxbot" or .author.login == "app/suxbot") | select(.baseRefName == "main")]')
+
+          count=$(echo "$prs_json" | jq 'length')
+          if [ "$count" -lt 2 ]; then
+            echo "Fewer than 2 open bot PRs targeting main; nothing to compare."
+            exit 0
+          fi
+
+          numbers=$(echo "$prs_json" | jq -r '.[].number')
+          for n in $numbers; do
+            branch=$(echo "$prs_json" | jq -r --argjson n "$n" '.[] | select(.number == $n) | .headRefName')
+            git fetch origin "$branch:refs/remotes/origin/$branch" 2>/dev/null || true
+          done
+
+          for a in $numbers; do
+            a_branch=$(echo "$prs_json" | jq -r --argjson n "$a" '.[] | select(.number == $n) | .headRefName')
+            a_ref="refs/remotes/origin/$a_branch"
+            git rev-parse --verify "$a_ref" >/dev/null 2>&1 || continue
+            a_sha=$(git rev-parse "$a_ref")
+
+            superseded_by=""
+            for b in $numbers; do
+              [ "$a" = "$b" ] && continue
+              b_branch=$(echo "$prs_json" | jq -r --argjson n "$b" '.[] | select(.number == $n) | .headRefName')
+              b_ref="refs/remotes/origin/$b_branch"
+              git rev-parse --verify "$b_ref" >/dev/null 2>&1 || continue
+              b_sha=$(git rev-parse "$b_ref")
+
+              [ "$a_sha" = "$b_sha" ] && continue
+
+              if git merge-base --is-ancestor "$a_sha" "$b_sha"; then
+                superseded_by="$b"
+                break
+              fi
+            done
+
+            if [ -n "$superseded_by" ]; then
+              echo "PR #$a is a fully-contained ancestor of PR #$superseded_by; closing #$a."
+              gh pr comment "$a" --body "Closing: this branch is fully contained in #$superseded_by (its head commit is an ancestor of #$superseded_by's head), so it's superseded — no changes here are missing from #$superseded_by."
+              gh pr close "$a"
+            fi
+          done
