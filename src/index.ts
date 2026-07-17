@@ -11,6 +11,7 @@ import {
 	requireSession,
 	unauthorizedResponse,
 } from "./auth/routes";
+import { syncVaultEmbeddings } from "./embeddings/sync";
 
 export interface Env {
 	NAV_CACHE: KVNamespace;
@@ -19,6 +20,15 @@ export interface Env {
 	// HMAC signing secret for recipient session cookies (#18). Set via
 	// `wrangler secret put SESSION_SECRET` — never a `vars` entry, never committed.
 	SESSION_SECRET: string;
+	// Workers AI binding — embeds QA questions and suxvault chunks with the same
+	// model (bge-base-en-v1.5), and generates citation-constrained QA answers.
+	AI: Ai;
+	// Vectorize index `suxvault-notes` (768-dim, cosine) — populated by
+	// POST /admin/sync-embeddings, queried by POST /api/qa.
+	VECTORIZE_INDEX: Vectorize;
+	// GitHub PAT (repo:read on SuxOS/suxvault) used only by the sync route to fetch
+	// current note content. Set via `wrangler secret put GITHUB_TOKEN`.
+	GITHUB_TOKEN: string;
 }
 
 // TODO: real Cloudflare Access policy (per-recipient OAuth invites) is deferred —
@@ -129,7 +139,25 @@ async function handleQa(request: Request, env: Env): Promise<Response> {
 	if (!username) return withSecurityHeaders(unauthorizedResponse());
 	const result = await extractQuestion(request);
 	if ("error" in result) return result.error;
-	return withSecurityHeaders(Response.json(askQuestion(result.question)));
+	const response = await askQuestion(result.question, { AI: env.AI, VECTORIZE_INDEX: env.VECTORIZE_INDEX });
+	return withSecurityHeaders(Response.json(response));
+}
+
+/**
+ * POST /admin/sync-embeddings — operator-only (issue #30), re-chunks and re-embeds
+ * every markdown note in suxvault and upserts the result into the suxvault-notes
+ * Vectorize index. Idempotent — safe to re-run any time suxvault content changes.
+ * Reachable only inside the Worker-wide assertStagingAccess gate, same convention
+ * as the other /admin/* routes in src/auth/routes.ts.
+ */
+async function handleSyncEmbeddings(request: Request, env: Env): Promise<Response> {
+	if (request.method !== "POST") return methodNotAllowed("POST");
+	try {
+		const result = await syncVaultEmbeddings(env.AI, env.VECTORIZE_INDEX, env.GITHUB_TOKEN);
+		return withSecurityHeaders(Response.json(result));
+	} catch (err) {
+		return errorResponse(502, { error: `embedding sync failed: ${err instanceof Error ? err.message : String(err)}` });
+	}
 }
 
 async function handleHealthz(request: Request, env: Env): Promise<Response> {
@@ -199,6 +227,7 @@ export default {
 		// this with the operator's own Cloudflare Access policy, unchanged).
 		if (url.pathname === "/admin/accounts") return withSecurityHeaders(await handleAdminCreateAccount(request, env));
 		if (url.pathname === "/admin/accounts/reset") return withSecurityHeaders(await handleAdminResetPassword(request, env));
+		if (url.pathname === "/admin/sync-embeddings") return handleSyncEmbeddings(request, env);
 
 		return withSecurityHeaders(new Response("not found", { status: 404 }));
 	},

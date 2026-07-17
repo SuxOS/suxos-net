@@ -76,10 +76,13 @@ Data is synthetic stub content only — see the README.
 
 ## `POST /api/qa`
 
-The QA bot stub (design doc §3) — always returns a `not_implemented` shape, never a
-fabricated answer or citation.
+Real retrieval-backed QA (design doc §3, issue #31): the question is embedded and
+matched against the `suxvault-notes` Vectorize index; an LLM only ever sees the
+retrieved chunks as context and is never called at all if nothing clears the
+similarity threshold. Requires a recipient session (see "Recipient auth" below).
 
-**Headers:** `Content-Type: application/json` required.
+**Headers:** `Content-Type: application/json` required. `Cookie: suxos_session=...`
+required (recipient session from `POST /login`) — `401` without one.
 
 **Body:**
 
@@ -89,24 +92,61 @@ fabricated answer or citation.
 
 `question` must be a non-empty string.
 
-**200 response:**
+**200 response, match found:**
 
 ```json
 {
   "question": "What happened in March?",
-  "answer": "QA retrieval is not yet wired to the citation graph. This is a stub response.",
+  "answer": "Based on the retrieved passages, this appears to say: ...",
+  "citations": [{ "sourcePath": "records/example.md", "heading": "Section", "score": 0.83 }],
+  "confidence": 0.83,
+  "status": "answered"
+}
+```
+
+**200 response, nothing above the similarity threshold (no LLM call is made):**
+
+```json
+{
+  "question": "...",
+  "answer": "I can't find anything in the indexed suxvault content that answers this question. No source was found, so I'm not going to guess.",
   "citations": [],
-  "status": "not_implemented"
+  "confidence": null,
+  "status": "no_match"
 }
 ```
 
 **Errors:**
 
+- `401` — missing/invalid/expired recipient session.
 - `400 { "error": "...", "field": "content-type" }` — missing/wrong `Content-Type`.
 - `400 { "error": "request body must be valid JSON" }` — malformed JSON body.
 - `400 { "error": "request body must be a JSON object" }` — body isn't a JSON object.
 - `400 { "error": "...", "field": "question" }` — `question` missing, non-string, or
   empty/whitespace-only.
+- `405` with `Allow: POST` — any method other than `POST`.
+
+---
+
+## `POST /admin/sync-embeddings`
+
+Operator-only (issue #30): re-chunks and re-embeds every markdown note in
+`SuxOS/suxvault`@`main` via Workers AI (`@cf/baai/bge-base-en-v1.5`) and upserts the
+result into the `suxvault-notes` Vectorize index. Idempotent — vector ids are derived
+from `(sourcePath, chunkIndex)`, so re-running against unchanged content upserts the
+same ids in place rather than creating duplicates. Not on a schedule yet; re-run this
+manually (or wire a cron/webhook trigger) whenever suxvault content changes.
+
+**200 response:**
+
+```json
+{ "filesScanned": 438, "chunksEmbedded": 1900, "vectorsUpserted": 1900 }
+```
+
+**Errors:**
+
+- `502 { "error": "embedding sync failed: ..." }` — GitHub fetch, embedding, or
+  Vectorize upsert failed partway through.
 - `405` with `Allow: POST` — any method other than `POST`.
 
 ---

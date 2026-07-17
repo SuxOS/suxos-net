@@ -1,6 +1,19 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "./index";
 import { createMemoryKv } from "./test/kvMock";
+
+function makeStubAi(): Ai {
+	const run = vi.fn(async (model: string) => {
+		if (model.includes("bge")) return { data: [[1, 0, 0]] };
+		return { response: "" };
+	});
+	return { run } as unknown as Ai;
+}
+
+function makeStubVectorizeIndex(): Vectorize {
+	const query = vi.fn(async () => ({ matches: [], count: 0 }));
+	return { query } as unknown as Vectorize;
+}
 
 let ENV: Env;
 
@@ -10,6 +23,9 @@ beforeEach(() => {
 		STAGING: "1",
 		ACCESS_STAGING_IDENTITY: "dev@localhost",
 		SESSION_SECRET: "test-session-secret-do-not-use-in-prod",
+		AI: makeStubAi(),
+		VECTORIZE_INDEX: makeStubVectorizeIndex(),
+		GITHUB_TOKEN: "test-github-token",
 	};
 });
 

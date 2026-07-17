@@ -15,6 +15,13 @@
 	// expose live because suxvault holds no real content yet (empty structure only); this
 	// was the deliberate reason for that split. No PHI/PII ever touches this staging KV.
 	"kv_namespaces": [{ "binding": "NAV_CACHE", "id": "bf133ed9581e43349b14fe736768a763" }],
+	// Workers AI — embeds QA questions and suxvault chunks with @cf/baai/bge-base-en-v1.5,
+	// and generates citation-constrained QA answers (issue #31, design doc §3).
+	"ai": { "binding": "AI" },
+	// Real Cloudflare Vectorize index `suxvault-notes` (768-dim, cosine metric), already
+	// created on this account (issue #30, design doc §2). Populated by
+	// POST /admin/sync-embeddings, queried by POST /api/qa.
+	"vectorize": [{ "binding": "VECTORIZE_INDEX", "index_name": "suxvault-notes" }],
 	"observability": { "enabled": true, "head_sampling_rate": 1 },
 	// Cloudflare Access fronts the whole Worker in real deployments (design doc §4); for
 	// `wrangler dev` there is no Access edge, so ACCESS_STAGING_IDENTITY stands in for the

@@ -265,6 +265,26 @@ const REFERENCE_NOTE_TEMPLATE = (claimId: string, referenceId: string, source: s
  * self-consistency pass — an LLM-assisted variant is separate, future, documented
  * work, not this function.
  */
+/**
+ * Hedge a single synthesized answer (e.g. an LLM's retrieval-grounded QA response)
+ * per the same non-negotiable wording contract as {@link findInconsistencies} and
+ * {@link flagAgainstReferences}: never a bare "true"/"verified"/"wrong" assertion,
+ * always framed as "appears to say," always paired with a `confidence < 1`.
+ *
+ * This is the single-answer counterpart to the pairwise/reference flaggers above —
+ * same instrument, applied to one piece of synthesized text instead of a claim pair.
+ * `confidence` should be derived from something real (e.g. retrieval similarity
+ * score), never a fixed placeholder, and is clamped here to guarantee it's `< 1`
+ * regardless of what the caller passes in.
+ */
+export function hedgeSynthesizedAnswer(rawAnswer: string, confidence: number): { text: string; confidence: number } {
+	const clamped = Math.max(0, Math.min(confidence, 0.95));
+	return {
+		text: `Based on the retrieved passages, this appears to say: ${rawAnswer}`,
+		confidence: clamped,
+	};
+}
+
 export function flagAgainstReferences(claims: Claim[], references: TrustedReference[]): ReferenceInconsistencyFlag[] {
 	const flags: ReferenceInconsistencyFlag[] = [];
 

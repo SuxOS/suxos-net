@@ -9,6 +9,9 @@ const ENV: Env = {
 	STAGING: "1",
 	ACCESS_STAGING_IDENTITY: "dev@localhost",
 	SESSION_SECRET: "test-session-secret-do-not-use-in-prod",
+	AI: {} as Ai,
+	VECTORIZE_INDEX: {} as Vectorize,
+	GITHUB_TOKEN: "test-github-token",
 };
 
 function req(path: string, init?: RequestInit): Request {
@@ -154,9 +157,10 @@ describe("GET /demo/flags", () => {
 });
 
 describe("existing /api/* routes are unchanged", () => {
-	// /api/qa is now gated behind a recipient session (#18, src/auth/routes.ts) —
-	// this test only asserts the auth gate is in effect; index.test.ts covers the
-	// full login -> session -> protected-route flow.
+	// /api/qa is no longer an unauthenticated stub: it's real retrieval-backed QA
+	// (src/qa.ts) gated behind a recipient session (#18, src/auth/routes.ts). This
+	// test only asserts the auth gate is in effect; index.test.ts covers the full
+	// login → session → protected-route flow and the QA behavior itself.
 	it("/api/qa requires a recipient session (no session cookie -> 401)", async () => {
 		const res = await call("/api/qa", {
 			method: "POST",
