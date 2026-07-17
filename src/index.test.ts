@@ -178,6 +178,47 @@ describe("GET /demo (frontend)", () => {
 	});
 });
 
+describe("rate limiting on /api/*", () => {
+	function envWithFreshKv(): Env {
+		return { ...ENV, NAV_CACHE: createInMemoryKv() };
+	}
+
+	it("allows requests under the limit", async () => {
+		const env = envWithFreshKv();
+		const res = await worker.fetch(req("/api/navigator", { headers: { "CF-Connecting-IP": "1.2.3.4" } }), env);
+		expect(res.status).toBe(200);
+	});
+
+	it("returns 429 with Retry-After once a client exceeds the window limit", async () => {
+		const env = envWithFreshKv();
+		const ip = "5.6.7.8";
+		let last: Response | undefined;
+		for (let i = 0; i < 61; i++) {
+			last = await worker.fetch(req("/api/navigator", { headers: { "CF-Connecting-IP": ip } }), env);
+		}
+		expect(last?.status).toBe(429);
+		expect(last?.headers.get("Retry-After")).toBe("60");
+	});
+
+	it("tracks limits per client independently", async () => {
+		const env = envWithFreshKv();
+		for (let i = 0; i < 60; i++) {
+			await worker.fetch(req("/api/navigator", { headers: { "CF-Connecting-IP": "9.9.9.9" } }), env);
+		}
+		const otherClient = await worker.fetch(req("/api/navigator", { headers: { "CF-Connecting-IP": "1.1.1.1" } }), env);
+		expect(otherClient.status).toBe(200);
+	});
+
+	it("does not rate-limit non-/api/ routes", async () => {
+		const env = envWithFreshKv();
+		let last: Response | undefined;
+		for (let i = 0; i < 65; i++) {
+			last = await worker.fetch(req("/healthz", { headers: { "CF-Connecting-IP": "2.2.2.2" } }), env);
+		}
+		expect(last?.status).toBe(200);
+	});
+});
+
 describe("unknown routes", () => {
 	it("returns 404 for an unrecognized path", async () => {
 		const res = await call("/api/does-not-exist");
