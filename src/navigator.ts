@@ -5,7 +5,8 @@
 // Verbosity rendering itself is delegated to the generic src/tools/verbositySummarizer
 // tool rather than duplicated here.
 
-import { summarizeAtVerbosity, type Verbosity as ToolVerbosity } from "./tools/verbositySummarizer";
+import { summarizeAtVerbosity } from "./tools/verbositySummarizer";
+import { toToolVerbosity, withinTimeScope as withinTimeScopeAt } from "./tools/navigatorScope";
 
 export type Verbosity = "bare" | "oneline" | "paragraph" | "narrative";
 export type TimeScope = "week" | "year" | "all";
@@ -55,17 +56,6 @@ const STUB_ENTRIES: NavigatorEntry[] = [
 	},
 ];
 
-// navigator's body-visibility contract differs slightly from the generic tool's:
-// navigator hides body entirely (not just collapses it) at "oneline" too, because the
-// entry's `title` already carries the oneline-equivalent summary here. So both "bare"
-// and "oneline" map to the tool's "bare" for rendering purposes; "narrative" is the
-// tool's "full" (same top-of-scale meaning, different name kept for compatibility).
-function toToolVerbosity(verbosity: Verbosity): ToolVerbosity {
-	if (verbosity === "bare" || verbosity === "oneline") return "bare";
-	if (verbosity === "narrative") return "full";
-	return verbosity;
-}
-
 function projectEntry(entry: NavigatorEntry, verbosity: Verbosity): NavigatorEntry {
 	const [rendered] = summarizeAtVerbosity(
 		[{ id: entry.id, date: entry.date, text: entry.body ?? "", citations: entry.citationIds }],
@@ -74,23 +64,11 @@ function projectEntry(entry: NavigatorEntry, verbosity: Verbosity): NavigatorEnt
 	return { ...entry, body: rendered.rendered };
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-const TIME_SCOPE_WINDOW_DAYS: Record<Exclude<TimeScope, "all">, number> = { week: 7, year: 365 };
-
-// "week"/"year" are a trailing window ending at `now` (design doc §2: "a week → the whole
-// span"); "all" passes every entry through untouched.
-function withinTimeScope(entry: NavigatorEntry, timeScope: TimeScope, now: Date): boolean {
-	if (timeScope === "all") return true;
-	const entryMs = new Date(entry.date).getTime();
-	const windowMs = TIME_SCOPE_WINDOW_DAYS[timeScope] * DAY_MS;
-	return entryMs <= now.getTime() && now.getTime() - entryMs <= windowMs;
-}
-
 export function getNavigatorView(verbosity: Verbosity, timeScope: TimeScope, now: Date = new Date()): NavigatorResponse {
 	return {
 		verbosity,
 		timeScope,
-		entries: STUB_ENTRIES.filter((entry) => withinTimeScope(entry, timeScope, now)).map((entry) =>
+		entries: STUB_ENTRIES.filter((entry) => withinTimeScopeAt(entry.date, timeScope, now.getTime())).map((entry) =>
 			projectEntry(entry, verbosity),
 		),
 		generatedAt: new Date().toISOString(),
