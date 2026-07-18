@@ -5,11 +5,34 @@ import { askDemoQuestion } from "./demo/demoQa";
 import { buildDemoFlagsView } from "./demo/demoFlags";
 import { buildDemoHighlightsView } from "./demo/demoHighlights";
 import { DEMO_CSS, DEMO_HTML, DEMO_JS } from "./frontend/demoFrontend";
+import {
+	handleAdminCreateAccount,
+	handleAdminResetPassword,
+	handleLogin,
+	handleLogout,
+	requireSession,
+	unauthorizedResponse,
+} from "./auth/routes";
+import { isIpRequestAllowed } from "./auth/rateLimiter";
+
+// The atomic rate-limit / lockout Durable Object must be re-exported from the Worker
+// entrypoint so wrangler can bind it (durable_objects.bindings in wrangler.jsonc).
+export { RateLimiterDO } from "./auth/rateLimiter";
 
 export interface Env {
 	NAV_CACHE: KVNamespace;
+	// Atomic per-IP and per-username counters (#35). KV has no atomic increment, so
+	// both rate limiters live in this serialised Durable Object namespace — see
+	// src/auth/rateLimiter.ts. Closes the two TOCTOU HIGHs on #35.
+	RATE_LIMITER: DurableObjectNamespace;
 	STAGING: string;
 	ACCESS_STAGING_IDENTITY: string;
+	// HMAC signing secret for recipient session cookies (#18). Set via
+	// `wrangler secret put SESSION_SECRET` — never a `vars` entry, never committed.
+	SESSION_SECRET: string;
+	// Bearer secret for operator-only /admin/* routes (#18). Set via
+	// `wrangler secret put OPERATOR_TOKEN`. Fails closed when unset (admin → 401).
+	OPERATOR_TOKEN: string;
 }
 
 // TODO: real Cloudflare Access policy (per-recipient OAuth invites) is deferred —
@@ -74,10 +97,12 @@ function methodNotAllowed(allow: string): Response {
 	return errorResponse(405, { error: `method not allowed, expected ${allow}` }, { Allow: allow });
 }
 
-// Basic per-client rate limiting (issue #28 audit finding: "none exists currently").
-// Best-effort fixed-window counter in NAV_CACHE — KV has no atomic increment, so under
-// real concurrency this can undercount, but for a staging Worker with no real traffic
-// yet this is a cheap deterrent against the obvious abuse case, not a hard guarantee.
+// Per-client rate limiting (issue #28 audit finding: "none exists currently").
+// Fixed-window counter in the RateLimiterDO Durable Object — NOT KV. KV has no atomic
+// increment, so the old get-then-put here was a TOCTOU race: a burst of concurrent
+// requests could all read the same pre-increment count and pass together, blowing past
+// the budget (security-review HIGH on #35). The DO serialises increment-and-check per
+// IP, so the 60/60s budget is now a hard guarantee, not a best-effort deterrent.
 const RATE_LIMIT_WINDOW_SECONDS = 60;
 const RATE_LIMIT_MAX_REQUESTS = 60;
 
@@ -85,13 +110,18 @@ function clientIdentity(request: Request): string {
 	return request.headers.get("CF-Connecting-IP") ?? "unknown";
 }
 
+// Paths that pass through the per-IP rate limiter before dispatch. Covers the JSON
+// API (/api/*) plus the auth surface: /login (per-IP throttle on top of the
+// per-username lockout in auth/store.ts — the lockout alone can't stop password
+// spraying, where each username only ever accrues one failed attempt) and every
+// operator /admin/* route (account provisioning + reset). The operator bearer-token
+// gate still applies inside those handlers; this is an additive layer in front of it.
+function isRateLimitedPath(pathname: string): boolean {
+	return pathname.startsWith("/api/") || pathname === "/login" || pathname.startsWith("/admin/");
+}
+
 async function checkRateLimit(env: Env, identity: string): Promise<boolean> {
-	const windowBucket = Math.floor(Date.now() / (RATE_LIMIT_WINDOW_SECONDS * 1000));
-	const key = `ratelimit:v1:${identity}:${windowBucket}`;
-	const current = Number(await env.NAV_CACHE.get(key)) || 0;
-	if (current >= RATE_LIMIT_MAX_REQUESTS) return false;
-	await env.NAV_CACHE.put(key, String(current + 1), { expirationTtl: RATE_LIMIT_WINDOW_SECONDS });
-	return true;
+	return isIpRequestAllowed(env.RATE_LIMITER, identity, RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECONDS * 1000);
 }
 
 function rateLimitedResponse(): Response {
@@ -109,6 +139,9 @@ function navCacheKey(verbosity: string, timeScope: string): string {
 
 async function handleNavigator(request: Request, env: Env): Promise<Response> {
 	if (request.method !== "GET") return methodNotAllowed("GET");
+
+	const username = await requireSession(request, env);
+	if (!username) return withSecurityHeaders(unauthorizedResponse());
 
 	const url = new URL(request.url);
 	const verbosityRaw = url.searchParams.get("verbosity") ?? "oneline";
@@ -170,8 +203,10 @@ async function extractQuestion(request: Request): Promise<{ question: string } |
 	return { question };
 }
 
-async function handleQa(request: Request): Promise<Response> {
+async function handleQa(request: Request, env: Env): Promise<Response> {
 	if (request.method !== "POST") return methodNotAllowed("POST");
+	const username = await requireSession(request, env);
+	if (!username) return withSecurityHeaders(unauthorizedResponse());
 	const result = await extractQuestion(request);
 	if ("error" in result) return result.error;
 	return withSecurityHeaders(Response.json(askQuestion(result.question)));
@@ -250,12 +285,12 @@ export default {
 		assertStagingAccess(env);
 		const url = new URL(request.url);
 
-		if (url.pathname.startsWith("/api/") && !(await checkRateLimit(env, clientIdentity(request)))) {
+		if (isRateLimitedPath(url.pathname) && !(await checkRateLimit(env, clientIdentity(request)))) {
 			return rateLimitedResponse();
 		}
 
 		if (url.pathname === "/api/navigator") return handleNavigator(request, env);
-		if (url.pathname === "/api/qa") return handleQa(request);
+		if (url.pathname === "/api/qa") return handleQa(request, env);
 		if (url.pathname === "/healthz") return handleHealthz(request, env);
 		if (url.pathname === "/demo/navigator") return handleDemoNavigator(request);
 		if (url.pathname === "/demo/qa") return handleDemoQa(request);
@@ -264,6 +299,19 @@ export default {
 		if (url.pathname === "/demo" || url.pathname === "/demo/") return handleDemoPage(request);
 		if (url.pathname === "/demo/app.css") return handleDemoAppCss(request);
 		if (url.pathname === "/demo/app.js") return handleDemoAppJs(request);
+
+		// --- Recipient auth (#18) ---
+		if (url.pathname === "/login") return withSecurityHeaders(await handleLogin(request, env));
+		if (url.pathname === "/logout") return withSecurityHeaders(await handleLogout(request));
+
+		// --- Operator-only admin routes: account provisioning + reset. No self-serve
+		// signup exists anywhere in this Worker — these are the only ways an account
+		// is created or a password changed. Each handler independently enforces an
+		// operator bearer token (OPERATOR_TOKEN) and fails closed if it is unset, so
+		// these routes are NOT exposed on a bare `*.workers.dev` deploy even though
+		// no Cloudflare Access edge fronts this staging Worker yet.
+		if (url.pathname === "/admin/accounts") return withSecurityHeaders(await handleAdminCreateAccount(request, env));
+		if (url.pathname === "/admin/accounts/reset") return withSecurityHeaders(await handleAdminResetPassword(request, env));
 
 		return withSecurityHeaders(new Response("not found", { status: 404 }));
 	},

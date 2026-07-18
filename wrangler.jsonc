@@ -15,6 +15,16 @@
 	// expose live because suxvault holds no real content yet (empty structure only); this
 	// was the deliberate reason for that split. No PHI/PII ever touches this staging KV.
 	"kv_namespaces": [{ "binding": "NAV_CACHE", "id": "bf133ed9581e43349b14fe736768a763" }],
+	// Atomic rate-limit / lockout counters (#35). KV has no atomic increment, so both
+	// the per-IP request limiter and the per-username login lockout run through this
+	// Durable Object — a single DO instance per key serialises increment-and-check,
+	// closing the two TOCTOU HIGHs where client-side concurrency bypassed both limits.
+	// See src/auth/rateLimiter.ts. SQLite-backed (new_sqlite_classes) — the modern
+	// default for new DO classes; the class uses the KV-style storage API over it.
+	"durable_objects": {
+		"bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiterDO" }]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiterDO"] }],
 	"observability": { "enabled": true, "head_sampling_rate": 1 },
 	// Cloudflare Access fronts the whole Worker in real deployments (design doc §4); for
 	// `wrangler dev` there is no Access edge, so ACCESS_STAGING_IDENTITY stands in for the
