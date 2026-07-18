@@ -111,6 +111,69 @@ fabricated answer or citation.
 
 ---
 
+## `POST /api/review`
+
+The reviewer-facing record-integrity endpoint (design doc §1's "never ask a reader to
+take the user's word for it") — runs all four review tools (`findInconsistencies`,
+`findGroundingSignals`, `flagAgainstReferences`, `checkCitationIntegrity`) over a
+caller-submitted batch of claims and returns every hedged flag/signal/report together,
+the same shape `GET /demo/flags` returns over the fictional demo dataset. suxvault
+holds no real content yet, so the caller submits the claims (and, optionally, a small
+curated set of trusted references) directly in the request body rather than this route
+pulling them from a record itself.
+
+**Requires a recipient session** (same `requireSession` cookie check as
+`GET /api/navigator`/`POST /api/qa`).
+
+**Headers:** `Content-Type: application/json` required.
+
+**Body:**
+
+```json
+{
+  "claims": [
+    { "id": "claim-a", "text": "...", "citations": ["claim-b"], "confidence": 0.8 }
+  ],
+  "references": [
+    { "id": "ref-001", "text": "...", "source": "...", "sourceUrl": "https://..." }
+  ]
+}
+```
+
+`claims` is required: a non-empty array of at most 200 entries. Each claim needs a
+non-empty `id` (≤200 chars), a non-empty `text` (≤4000 chars), and a `citations` array
+of at most 50 string entries (each ≤200 chars); `confidence`, if present, must be a
+number between 0 and 1. `references` is optional: an array of at most 200 entries,
+each needing a non-empty `id` (≤200 chars), non-empty `text` (≤4000 chars), and
+non-empty `source` (≤500 chars); `sourceUrl`, if present, is a non-empty string
+(≤500 chars). These caps bound the O(n²)/O(claims×references) cost of the pairwise
+checks below to a fixed worst case per request, regardless of caller input.
+
+**200 response:** same shape as `GET /demo/flags`'s 200 response (`selfConsistency`,
+`groundingSignals`, `referenceConsistency`, `citationIntegrity`), computed over the
+submitted `claims`/`references` instead of the fictional demo dataset, and with no
+`notice` field (this is real caller-submitted input, not demo data). For
+`citationIntegrity`, a citation is only "known" if it names another claim's `id` or a
+submitted reference's `id` in the same request — not an open-ended external set.
+
+**Errors:**
+
+- `400 { "error": "...", "field": "content-type" }` — missing/wrong `Content-Type`.
+- `400 { "error": "request body must be valid JSON" }` — malformed JSON body.
+- `400 { "error": "request body must be a JSON object" }` — body isn't a JSON object.
+- `400 { "error": "...", "field": "claims" }` — `claims` missing, not an array, empty,
+  or over 200 entries.
+- `400 { "error": "...", "field": "claims[i].id" | "claims[i].text" | "claims[i].citations" | "claims[i].confidence" }`
+  — a specific claim failed validation.
+- `400 { "error": "...", "field": "references" }` — `references` present but not an
+  array, or over 200 entries.
+- `400 { "error": "...", "field": "references[i].id" | "references[i].text" | "references[i].source" | "references[i].sourceUrl" }`
+  — a specific reference failed validation.
+- `401 { "error": "authentication required" }` — no valid recipient session.
+- `405` with `Allow: POST` — any method other than `POST`.
+
+---
+
 ## `GET /healthz`
 
 Liveness/identity check.

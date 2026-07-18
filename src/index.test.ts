@@ -83,6 +83,24 @@ describe("GET /api/navigator (requires a recipient session)", () => {
 		expect(res.status).toBe(200);
 	});
 
+	it("re-stamps generatedAt to the actual response time on a cache hit (#7)", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(1_700_000_000_000);
+			const first = await call("/api/navigator", { headers: { Cookie: cookie } });
+			const firstBody = (await first.json()) as { generatedAt: string };
+			expect(firstBody.generatedAt).toBe(new Date(1_700_000_000_000).toISOString());
+
+			vi.setSystemTime(1_700_000_060_000); // 60s later, still within the 5min cache TTL
+			const second = await call("/api/navigator", { headers: { Cookie: cookie } });
+			const secondBody = (await second.json()) as { generatedAt: string };
+			expect(secondBody.generatedAt).toBe(new Date(1_700_000_060_000).toISOString());
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("returns a structured 400 for an out-of-range verbosity", async () => {
 		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
 		const res = await call("/api/navigator?verbosity=essay", { headers: { Cookie: cookie } });
@@ -179,6 +197,92 @@ describe("POST /api/qa (requires a recipient session)", () => {
 	it("returns 405 with an Allow header for a non-POST method", async () => {
 		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
 		const res = await call("/api/qa", { method: "GET", headers: { Cookie: cookie } });
+		expect(res.status).toBe(405);
+		expect(res.headers.get("Allow")).toBe("POST");
+	});
+});
+
+describe("POST /api/review (requires a recipient session)", () => {
+	const VALID_CLAIMS = [
+		{ id: "claim-a", text: "The synthetic widget was present at the sample facility.", citations: [] },
+		{ id: "claim-b", text: "The synthetic widget was not present at the sample facility.", citations: [] },
+	];
+
+	function reviewBody(cookie: string, body: unknown): RequestInit {
+		return { method: "POST", headers: { "content-type": "application/json", Cookie: cookie }, body: JSON.stringify(body) };
+	}
+
+	it("returns 401 with no session cookie", async () => {
+		const res = await call("/api/review", jsonBody({ claims: VALID_CLAIMS }));
+		expect(res.status).toBe(401);
+	});
+
+	it("returns 200 with all four review dimensions for a valid session and body", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		const res = await call("/api/review", reviewBody(cookie, { claims: VALID_CLAIMS }));
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body).toHaveProperty("selfConsistency");
+		expect(body).toHaveProperty("groundingSignals");
+		expect(body).toHaveProperty("referenceConsistency");
+		expect(body).toHaveProperty("citationIntegrity");
+	});
+
+	it("returns a structured 400 when claims is missing", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		const res = await call("/api/review", reviewBody(cookie, {}));
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("claims");
+	});
+
+	it("returns a structured 400 when claims is an empty array", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		const res = await call("/api/review", reviewBody(cookie, { claims: [] }));
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("claims");
+	});
+
+	it("returns a structured 400 when claims exceeds the array-length cap (#9)", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		const tooMany = Array.from({ length: 201 }, (_, i) => ({ id: `claim-${i}`, text: "filler synthetic text", citations: [] }));
+		const res = await call("/api/review", reviewBody(cookie, { claims: tooMany }));
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("claims");
+	});
+
+	it("returns a structured 400 when a claim's text exceeds the per-field length cap (#13)", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		const oversized = [{ id: "claim-huge", text: "x".repeat(4001), citations: [] }];
+		const res = await call("/api/review", reviewBody(cookie, { claims: oversized }));
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("claims[0].text");
+	});
+
+	it("returns a structured 400 when a claim is missing an id", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		const invalid = [{ text: "no id here", citations: [] }];
+		const res = await call("/api/review", reviewBody(cookie, { claims: invalid }));
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("claims[0].id");
+	});
+
+	it("returns a structured 400 when references exceeds the array-length cap (#9)", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		const tooMany = Array.from({ length: 201 }, (_, i) => ({ id: `ref-${i}`, text: "filler", source: "filler source" }));
+		const res = await call("/api/review", reviewBody(cookie, { claims: VALID_CLAIMS, references: tooMany }));
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("references");
+	});
+
+	it("returns 405 with an Allow header for a non-POST method", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		const res = await call("/api/review", { method: "GET", headers: { Cookie: cookie } });
 		expect(res.status).toBe(405);
 		expect(res.headers.get("Allow")).toBe("POST");
 	});
