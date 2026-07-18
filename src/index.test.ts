@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "./index";
 import { createMemoryKv } from "./test/kvMock";
 
@@ -236,6 +236,22 @@ describe("rate limiting on /api/*", () => {
 	function envWithFreshKv(): Env {
 		return { ...ENV, NAV_CACHE: createMemoryKv() };
 	}
+
+	// The limiter uses a fixed-window counter keyed on Math.floor(Date.now() / window)
+	// (see checkRateLimit). These accumulation tests fire 60+ requests in one loop and
+	// assert the budget trips; that invariant only holds if every request lands in the
+	// SAME wall-clock window. The slow /login and /admin sprays (a real hash per request)
+	// take ~3s, so on a real (unfrozen) clock the loop can straddle a 60s boundary, reset
+	// the bucket mid-flight, and let the final request through — a genuine wall-clock flake
+	// that turned CI red on the /login case. Freeze the clock to a fixed mid-window instant
+	// so all requests share one bucket. This still exercises the real per-IP accumulation:
+	// 61 requests from one IP against a stable window must exhaust the 60-request budget.
+	beforeEach(() => {
+		vi.spyOn(Date, "now").mockReturnValue(1_700_000_030_000);
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
 
 	it("allows requests under the limit", async () => {
 		const env = envWithFreshKv();
