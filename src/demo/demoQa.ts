@@ -4,6 +4,7 @@
 // no fabrication is possible here, only "here's what matched, with its citations."
 
 import { demoClaims, demoRecords } from "./demoData";
+import { toOneLine } from "../tools/verbositySummarizer";
 
 export interface DemoQaMatch {
 	id: string;
@@ -12,11 +13,16 @@ export interface DemoQaMatch {
 	citations: string[];
 }
 
+/** "Haiku mode" (design doc §3): an opt-in compact rendering of the same cited
+ * matches, not a different answer — see `askDemoQuestion`'s `format` param. */
+export type QaFormat = "default" | "haiku";
+
 export interface DemoQaResponse {
 	question: string;
 	matches: DemoQaMatch[];
 	status: "matched" | "no_match";
 	notice: string;
+	format: QaFormat;
 }
 
 const NOTICE = "FICTIONAL DEMO DATA — not the user's real information. Do not treat as real.";
@@ -40,7 +46,7 @@ function keywordsOf(text: string): string[] {
  * answer or a citation, it only surfaces records/claims whose text shares keywords
  * with the question, ranked by overlap count.
  */
-export function askDemoQuestion(question: string): DemoQaResponse {
+export function askDemoQuestion(question: string, format: QaFormat = "default"): DemoQaResponse {
 	const questionKeywords = new Set(keywordsOf(question));
 
 	const candidates: DemoQaMatch[] = [
@@ -58,10 +64,16 @@ export function askDemoQuestion(question: string): DemoQaResponse {
 		.slice(0, 5)
 		.map(({ candidate }) => candidate);
 
+	// Haiku mode compacts each match's text to a single line via the same
+	// oneline-verbosity transform navigator.ts uses — citations are untouched, so
+	// it only shortens the rendering, never drops or fabricates a source.
+	const matches = format === "haiku" ? scored.map((match) => ({ ...match, text: toOneLine(match.text) })) : scored;
+
 	return {
 		question,
-		matches: scored,
-		status: scored.length > 0 ? "matched" : "no_match",
+		matches,
+		status: matches.length > 0 ? "matched" : "no_match",
 		notice: NOTICE,
+		format,
 	};
 }

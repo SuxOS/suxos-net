@@ -2,7 +2,7 @@ import { askQuestion } from "./qa";
 import { handleReview } from "./review";
 import { getNavigatorView, isTimeScope, isVerbosity, TIME_SCOPE_VALUES, VERBOSITY_VALUES, type NavigatorResponse } from "./navigator";
 import { buildDemoNavigatorView } from "./demo/demoNavigator";
-import { askDemoQuestion } from "./demo/demoQa";
+import { askDemoQuestion, type QaFormat } from "./demo/demoQa";
 import { buildDemoFlagsView } from "./demo/demoFlags";
 import { buildDemoHighlightsView } from "./demo/demoHighlights";
 import { DEMO_CSS, DEMO_HTML, DEMO_JS } from "./frontend/demoFrontend";
@@ -177,11 +177,18 @@ async function handleNavigator(request: Request, env: Env): Promise<Response> {
 	return withSecurityHeaders(Response.json(view));
 }
 
+const QA_FORMAT_VALUES: readonly QaFormat[] = ["default", "haiku"];
+
+function isQaFormat(value: unknown): value is QaFormat {
+	return typeof value === "string" && (QA_FORMAT_VALUES as readonly string[]).includes(value);
+}
+
 /**
  * Shared body-parsing for the two `{ "question": "..." }` POST routes (/api/qa and
- * /demo/qa) — returns either the validated question string or the 400 to send back.
+ * /demo/qa) — returns either the validated question (and optional "haiku mode"
+ * format, design doc §3) or the 400 to send back.
  */
-async function extractQuestion(request: Request): Promise<{ question: string } | { error: Response }> {
+async function extractQuestion(request: Request): Promise<{ question: string; format: QaFormat } | { error: Response }> {
 	const contentType = request.headers.get("content-type") ?? "";
 	if (!contentType.includes("application/json")) {
 		return { error: errorResponse(400, { error: "expected Content-Type: application/json", field: "content-type" }) };
@@ -206,7 +213,14 @@ async function extractQuestion(request: Request): Promise<{ question: string } |
 		return { error: errorResponse(400, { error: "question must not be empty", field: "question" }) };
 	}
 
-	return { question };
+	const formatRaw = (parsed as Record<string, unknown>).format;
+	if (formatRaw !== undefined && !isQaFormat(formatRaw)) {
+		return {
+			error: errorResponse(400, { error: `invalid format; expected one of ${QA_FORMAT_VALUES.join(", ")}`, field: "format" }),
+		};
+	}
+
+	return { question, format: formatRaw ?? "default" };
 }
 
 async function handleQa(request: Request, env: Env): Promise<Response> {
@@ -254,7 +268,7 @@ async function handleDemoQa(request: Request): Promise<Response> {
 	if (request.method !== "POST") return methodNotAllowed("POST");
 	const result = await extractQuestion(request);
 	if ("error" in result) return result.error;
-	return withSecurityHeaders(Response.json(askDemoQuestion(result.question)));
+	return withSecurityHeaders(Response.json(askDemoQuestion(result.question, result.format)));
 }
 
 async function handleDemoFlags(request: Request): Promise<Response> {

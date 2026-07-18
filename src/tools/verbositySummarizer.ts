@@ -31,7 +31,7 @@ const ONELINE_MAX_LENGTH = 140;
  * with an ellipsis. This is a display transform only — it never drops information
  * that changes the substance of the claim, just the amount of it shown at once.
  */
-function toOneLine(text: string): string {
+export function toOneLine(text: string): string {
 	const collapsed = text.replace(/\s+/g, " ").trim();
 	if (collapsed.length === 0) return "";
 
