@@ -295,7 +295,9 @@ describe("rate limiting on /api/*", () => {
 		}
 		expect(last?.status).toBe(429);
 		expect(last?.headers.get("Retry-After")).toBe("60");
-	});
+		// 61 real /login attempts each run the constant-time decoy hash (deliberately
+		// slow to defeat username-enumeration timing) — extend past vitest's 5s default.
+	}, 30000);
 
 	it("IP-rate-limits /admin/* routes (429 after the window budget)", async () => {
 		const env = envWithFreshKv();
@@ -309,7 +311,8 @@ describe("rate limiting on /api/*", () => {
 		}
 		expect(last?.status).toBe(429);
 		expect(last?.headers.get("Retry-After")).toBe("60");
-	});
+		// 61 real account provisions each hash the password on store — extend past 5s.
+	}, 30000);
 });
 
 describe("unknown routes", () => {
