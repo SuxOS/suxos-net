@@ -4,11 +4,11 @@ import { buildDemoNavigatorView } from "./demoNavigator";
 import { askDemoQuestion } from "./demoQa";
 import { buildDemoFlagsView } from "./demoFlags";
 import { buildDemoHighlightsView } from "./demoHighlights";
-import { createInMemoryKv } from "../testUtils/kv";
+import { createMemoryKv } from "../test/kvMock";
 import { createRateLimiterNamespace } from "../test/doMock";
 
 const ENV: Env = {
-	NAV_CACHE: createInMemoryKv(),
+	NAV_CACHE: createMemoryKv(),
 	RATE_LIMITER: createRateLimiterNamespace(),
 	STAGING: "1",
 	ACCESS_STAGING_IDENTITY: "dev@localhost",
