@@ -1,5 +1,6 @@
 import { askQuestion } from "./qa";
-import { getNavigatorView, isTimeScope, isVerbosity, TIME_SCOPE_VALUES, VERBOSITY_VALUES } from "./navigator";
+import { handleReview } from "./review";
+import { getNavigatorView, isTimeScope, isVerbosity, TIME_SCOPE_VALUES, VERBOSITY_VALUES, type NavigatorResponse } from "./navigator";
 import { buildDemoNavigatorView } from "./demo/demoNavigator";
 import { askDemoQuestion } from "./demo/demoQa";
 import { buildDemoFlagsView } from "./demo/demoFlags";
@@ -163,12 +164,17 @@ async function handleNavigator(request: Request, env: Env): Promise<Response> {
 	const cacheKey = navCacheKey(verbosityRaw, timeScopeRaw);
 	const cached = await env.NAV_CACHE.get(cacheKey);
 	if (cached !== null) {
-		return withSecurityHeaders(new Response(cached, { headers: { "Content-Type": "application/json" } }));
+		// Only `entries` is what's worth caching — `generatedAt` must reflect this
+		// response's actual time, not whenever the cache entry was first computed (#7),
+		// or a caller relying on it for freshness would be misled once entries stop
+		// being static stubs.
+		const view: NavigatorResponse = { ...(JSON.parse(cached) as NavigatorResponse), generatedAt: new Date().toISOString() };
+		return withSecurityHeaders(Response.json(view));
 	}
 
-	const body = JSON.stringify(getNavigatorView(verbosityRaw, timeScopeRaw));
-	await env.NAV_CACHE.put(cacheKey, body, { expirationTtl: NAV_CACHE_TTL_SECONDS });
-	return withSecurityHeaders(new Response(body, { headers: { "Content-Type": "application/json" } }));
+	const view = getNavigatorView(verbosityRaw, timeScopeRaw);
+	await env.NAV_CACHE.put(cacheKey, JSON.stringify(view), { expirationTtl: NAV_CACHE_TTL_SECONDS });
+	return withSecurityHeaders(Response.json(view));
 }
 
 /**
@@ -291,6 +297,7 @@ export default {
 
 		if (url.pathname === "/api/navigator") return handleNavigator(request, env);
 		if (url.pathname === "/api/qa") return handleQa(request, env);
+		if (url.pathname === "/api/review") return withSecurityHeaders(await handleReview(request, env));
 		if (url.pathname === "/healthz") return handleHealthz(request, env);
 		if (url.pathname === "/demo/navigator") return handleDemoNavigator(request);
 		if (url.pathname === "/demo/qa") return handleDemoQa(request);

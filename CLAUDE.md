@@ -41,3 +41,17 @@ suxvault-access note above). Before starting any issue, check whether it names a
 `src/auth/`, `src/audit/`, or `src/access/` — if so, confirm with `git ls-tree -r main --name-only` that
 the file still doesn't exist before assuming this note is stale, then drop the issue as blocked rather
 than rebuilding the foundation from scratch or re-deriving this from first principles.
+
+### Update, same day (2026-07-18): the `#35` foundation landed; the `src/review.ts` cluster is now built too
+
+Both bullets above went stale within the same day they were written — a concrete example of why this
+file says to *verify*, not just trust the note. PR #35 merged to `main` (commit `aa66e05`, closing #18);
+`src/auth/*` now exists on `main`, so the "#18/#19/#20 blocked on unmerged auth foundation" claim no
+longer holds for #19/#20 (re-check `git ls-tree` before picking them up — they may still be legitimately
+large/unbuilt, just not for *that* reason anymore). Separately, this same PR built `src/review.ts` and
+`POST /api/review` (issue #5) with the array-length and per-field text-length caps (#9, #13) and the
+single-pass `findInconsistencies` computation (#10) designed in from the start, so `#5, #9, #10, #13` are
+no longer stranded either — only `#12` (a labels-only issue, already independently resolved — see `gh
+label list`) was dropped. `#32, #37, #38` still depend on suxvault access and are unaffected. Lesson: a
+"known-stranded" list is a snapshot, not a standing fact — the moment one builder actually lands a
+foundation, every issue in that cluster's status flips, and nothing auto-updates this file to say so.

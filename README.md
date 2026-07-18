@@ -37,9 +37,15 @@ Routes:
   — the 2D navigator stub (see `src/navigator.ts`).
 - `POST /api/qa` with `{ "question": "..." }` — the QA bot stub (see `src/qa.ts`); always
   returns a `not_implemented` shape, never a fabricated answer or citation.
+- `POST /api/review` with `{ "claims": [...], "references": [...] }` — the
+  reviewer-facing record-integrity endpoint (see `src/review.ts`); runs
+  `findInconsistencies`, `findGroundingSignals`, `flagAgainstReferences`, and
+  `checkCitationIntegrity` over the submitted claims/references, bounded array-length
+  and per-field text-length caps so the pairwise checks stay a fixed worst case per
+  request.
 - `GET /healthz`
 
-Full request/response/error shapes for all three routes: [`docs/api.md`](docs/api.md).
+Full request/response/error shapes for all four routes: [`docs/api.md`](docs/api.md).
 
 ## Try it live — fictional demo data
 
