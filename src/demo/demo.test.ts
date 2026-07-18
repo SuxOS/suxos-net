@@ -6,6 +6,7 @@ import { buildDemoFlagsView } from "./demoFlags";
 import { buildDemoHighlightsView } from "./demoHighlights";
 import { createMemoryKv } from "../test/kvMock";
 import { createRateLimiterNamespace } from "../test/doMock";
+import { createReference } from "../references/store";
 
 const ENV: Env = {
 	NAV_CACHE: createMemoryKv(),
@@ -89,37 +90,55 @@ describe("askDemoQuestion", () => {
 });
 
 describe("buildDemoFlagsView", () => {
-	it("finds the intentionally-conflicting demo claim pair", () => {
-		const view = buildDemoFlagsView();
+	it("finds the intentionally-conflicting demo claim pair", async () => {
+		const view = await buildDemoFlagsView(createMemoryKv());
 		const ids = new Set(view.selfConsistency.flatMap((f) => [f.claimIdA, f.claimIdB]));
 		expect(ids.has("demo-claim-conflict-a")).toBe(true);
 		expect(ids.has("demo-claim-conflict-b")).toBe(true);
 	});
 
-	it("finds a grounding signal for the corroborated demo claim", () => {
-		const view = buildDemoFlagsView();
+	it("finds a grounding signal for the corroborated demo claim", async () => {
+		const view = await buildDemoFlagsView(createMemoryKv());
 		expect(view.groundingSignals.some((s) => s.claimId === "demo-claim-grounded")).toBe(true);
 	});
 
-	it("finds the reference-consistency conflict against the fictional formulary reference", () => {
-		const view = buildDemoFlagsView();
+	it("finds the reference-consistency conflict against the fictional formulary reference when the curated store is empty (fallback)", async () => {
+		const view = await buildDemoFlagsView(createMemoryKv());
 		expect(view.referenceConsistency.some((f) => f.claimId === "demo-claim-vs-reference")).toBe(true);
 	});
 
-	it("flags the one intentionally-dangling citation and nothing else", () => {
-		const view = buildDemoFlagsView();
+	it("flags the one intentionally-dangling citation and nothing else", async () => {
+		const view = await buildDemoFlagsView(createMemoryKv());
 		expect(view.citationIntegrity.clean).toBe(false);
 		expect(view.citationIntegrity.dangling).toEqual([
 			{ recordId: "demo-claim-conflict-b", citationId: "demo-cite-012" },
 		]);
+	});
+
+	it("uses curated store references instead of the fictional fallback once the store is non-empty", async () => {
+		const kv = createMemoryKv();
+		// Deliberately shares no significant vocabulary with demoClaimAgainstReference's
+		// text (Fictoprazine/Pathway-Q/metabolized/interaction) so flagAgainstReferences'
+		// shared-keyword heuristic can't accidentally match it.
+		await createReference(kv, {
+			id: "curated-ref-1",
+			text: "Synthetic annual paperwork audit schedule applies to a wholly separate invented office procedure.",
+			source: "SYNTHETIC-TEST Reference Manual, fictional edition",
+			curator: "test-curator",
+			scopeOfApplicability: "fictional demo persona only",
+		});
+		const view = await buildDemoFlagsView(kv);
+		// The curated store now has content unrelated to the fictional demo formulary
+		// reference, so the fictional-fallback-only conflict should no longer fire.
+		expect(view.referenceConsistency.some((f) => f.claimId === "demo-claim-vs-reference")).toBe(false);
 	});
 });
 
 const FORBIDDEN_HIGHLIGHT_WORDS = ["wrong", "false", "verified", "lying", "lied", "incorrect"];
 
 describe("buildDemoHighlightsView", () => {
-	it("returns hedged highlights with confidence scores, never forbidden assertive language", () => {
-		const view = buildDemoHighlightsView();
+	it("returns hedged highlights with confidence scores, never forbidden assertive language", async () => {
+		const view = await buildDemoHighlightsView(createMemoryKv());
 		expect(view.highlights.length).toBeGreaterThan(0);
 		expect(view.notice.toLowerCase()).toContain("fictional");
 		for (const highlight of view.highlights) {
@@ -131,16 +150,16 @@ describe("buildDemoHighlightsView", () => {
 		}
 	});
 
-	it("flags the strongly-worded testimony document with a tone highlight", () => {
-		const view = buildDemoHighlightsView();
+	it("flags the strongly-worded testimony document with a tone highlight", async () => {
+		const view = await buildDemoHighlightsView(createMemoryKv());
 		const toneHighlight = view.highlights.find(
 			(h): h is Extract<typeof h, { type: "tone" }> => h.type === "tone" && h.sourceId === "demo-testimony-001",
 		);
 		expect(toneHighlight).toBeDefined();
 	});
 
-	it("never emits a possible-inconsistency highlight for a testimony document", () => {
-		const view = buildDemoHighlightsView();
+	it("never emits a possible-inconsistency highlight for a testimony document", async () => {
+		const view = await buildDemoHighlightsView(createMemoryKv());
 		const testimonyIds = new Set(["demo-testimony-001", "demo-testimony-002"]);
 		const testimonyInconsistencies = view.highlights.filter(
 			(h) => h.type === "possible-inconsistency" && testimonyIds.has(h.sourceId),
@@ -148,8 +167,8 @@ describe("buildDemoHighlightsView", () => {
 		expect(testimonyInconsistencies).toEqual([]);
 	});
 
-	it("finds the intentionally-conflicting demo claim pair as a possible-inconsistency highlight", () => {
-		const view = buildDemoHighlightsView();
+	it("finds the intentionally-conflicting demo claim pair as a possible-inconsistency highlight", async () => {
+		const view = await buildDemoHighlightsView(createMemoryKv());
 		const ids = new Set(
 			view.highlights.filter((h) => h.type === "possible-inconsistency").map((h) => h.sourceId),
 		);

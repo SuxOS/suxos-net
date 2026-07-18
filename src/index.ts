@@ -304,14 +304,14 @@ async function handleDemoQa(request: Request): Promise<Response> {
 	return withSecurityHeaders(Response.json(askDemoQuestion(result.question, result.format)));
 }
 
-async function handleDemoFlags(request: Request): Promise<Response> {
+async function handleDemoFlags(request: Request, env: Env): Promise<Response> {
 	if (request.method !== "GET") return methodNotAllowed("GET");
-	return withSecurityHeaders(Response.json(buildDemoFlagsView()));
+	return withSecurityHeaders(Response.json(await buildDemoFlagsView(env.NAV_CACHE)));
 }
 
-async function handleDemoHighlights(request: Request): Promise<Response> {
+async function handleDemoHighlights(request: Request, env: Env): Promise<Response> {
 	if (request.method !== "GET") return methodNotAllowed("GET");
-	return withSecurityHeaders(Response.json(buildDemoHighlightsView()));
+	return withSecurityHeaders(Response.json(await buildDemoHighlightsView(env.NAV_CACHE)));
 }
 
 // --- /demo frontend: the actual rendered 2D navigator UI (verbosity × time-scope,
@@ -348,8 +348,8 @@ export default {
 		if (url.pathname === "/healthz") return handleHealthz(request, env);
 		if (url.pathname === "/demo/navigator") return handleDemoNavigator(request);
 		if (url.pathname === "/demo/qa") return handleDemoQa(request);
-		if (url.pathname === "/demo/flags") return handleDemoFlags(request);
-		if (url.pathname === "/demo/highlights") return handleDemoHighlights(request);
+		if (url.pathname === "/demo/flags") return handleDemoFlags(request, env);
+		if (url.pathname === "/demo/highlights") return handleDemoHighlights(request, env);
 		if (url.pathname === "/demo" || url.pathname === "/demo/") return handleDemoPage(request);
 		if (url.pathname === "/demo/app.css") return handleDemoAppCss(request);
 		if (url.pathname === "/demo/app.js") return handleDemoAppJs(request);

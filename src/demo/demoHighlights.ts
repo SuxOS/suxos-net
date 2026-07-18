@@ -12,7 +12,8 @@
 
 import { findToneHighlights } from "../tools/toneHighlighter";
 import { findInconsistencies, flagAgainstReferences } from "../tools/inconsistencyFlagger";
-import { demoTestimonyDocuments, demoClaimsForReferenceCheck, demoClaims, demoTrustedReferences } from "./demoData";
+import { demoTestimonyDocuments, demoClaimsForReferenceCheck, demoClaims } from "./demoData";
+import { loadDemoTrustedReferences } from "./demoReferences";
 
 const NOTICE = "FICTIONAL DEMO DATA — not the user's real information. Do not treat as real.";
 
@@ -39,7 +40,10 @@ export interface DemoHighlightsResponse {
 	notice: string;
 }
 
-export function buildDemoHighlightsView(): DemoHighlightsResponse {
+// #65: checks against the real curated-reference store (KV-backed, #19) instead of the
+// hardcoded demoTrustedReferences array — see loadDemoTrustedReferences for the
+// empty-store fallback.
+export async function buildDemoHighlightsView(kv: KVNamespace): Promise<DemoHighlightsResponse> {
 	const toneHighlights: DemoToneHighlight[] = findToneHighlights(demoTestimonyDocuments).map((h) => ({
 		type: "tone",
 		sourceId: h.sourceId,
@@ -56,9 +60,10 @@ export function buildDemoHighlightsView(): DemoHighlightsResponse {
 		note: f.note,
 	}));
 
+	const trustedReferences = await loadDemoTrustedReferences(kv);
 	const referenceHighlights: DemoInconsistencyHighlight[] = flagAgainstReferences(
 		demoClaimsForReferenceCheck,
-		demoTrustedReferences,
+		trustedReferences,
 	).map((f) => ({
 		type: "possible-inconsistency",
 		sourceId: f.claimId,
