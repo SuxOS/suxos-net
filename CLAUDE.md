@@ -55,3 +55,15 @@ no longer stranded either — only `#12` (a labels-only issue, already independe
 label list`) was dropped. `#32, #37, #38` still depend on suxvault access and are unaffected. Lesson: a
 "known-stranded" list is a snapshot, not a standing fact — the moment one builder actually lands a
 foundation, every issue in that cluster's status flips, and nothing auto-updates this file to say so.
+
+## A closed issue is not proof its code landed — check the diff, not just the status
+
+Verified 2026-07-18 (issue #32 triage): PR #42 (`build: drain low-priority backlog`, merged) wrote `Closes
+#30` and `Closes #31` in its body, which auto-closed both via GitHub's magic-keyword handling — but PR
+#42's actual diff only touches `demo.test.ts`/`index.test.ts`/`index.ts`, never `src/qa.ts` or
+`src/embeddings/*`. The real implementation for #30/#31 sits unmerged in draft PR #34
+(`feat/real-qa-retrieval`, `CONFLICTING` mergeable state). `src/qa.ts` on `main` is still the original stub
+— confirmed by reading the file, not by trusting `state_reason: "completed"`. If an issue you're about to
+build (or an issue another one depends on, like #32 on #30/#31) shows as closed, don't take that as given:
+grep/read the file(s) it claims to touch on `main` before relying on it. A batch PR's `Closes #N` list is
+only as trustworthy as whoever wrote it — it is not a substitute for checking the tree.

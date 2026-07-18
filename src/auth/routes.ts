@@ -157,9 +157,11 @@ function extractBearerToken(request: Request): string | null {
  * or missing — an unconfigured Worker rejects every admin request rather than exposing
  * account provisioning/reset. Both sides are SHA-256'd to fixed 32-byte digests before
  * comparison so timingSafeEqual never leaks token length. Returns a 401 Response to
- * short-circuit the handler, or null when the caller is a verified operator.
+ * short-circuit the handler, or null when the caller is a verified operator. Exported
+ * so other operator-only admin routes (e.g. the audit-log read view, #20) reuse this
+ * exact check instead of re-implementing the constant-time comparison.
  */
-async function assertOperator(request: Request, env: AuthEnv): Promise<Response | null> {
+export async function assertOperator(request: Request, env: AuthEnv): Promise<Response | null> {
 	const provided = extractBearerToken(request);
 	if (!env.OPERATOR_TOKEN || !provided) return operatorUnauthorizedResponse();
 	const encoder = new TextEncoder();

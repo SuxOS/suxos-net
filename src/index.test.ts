@@ -446,6 +446,65 @@ describe("unknown routes", () => {
 	});
 });
 
+describe("access audit log (#20)", () => {
+	it("records a navigator read with the recipient identity and the entry ids viewed, not their body text", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		const res = await call("/api/navigator", { headers: { Cookie: cookie } });
+		expect(res.status).toBe(200);
+		const navBody = (await res.json()) as { entries: { id: string; body: string | null }[] };
+
+		const auditRes = await call("/admin/audit-log", { headers: { Authorization: `Bearer ${OPERATOR_TOKEN}` } });
+		const { entries } = (await auditRes.json()) as {
+			entries: { identity: { kind: string; username?: string }; detail: Record<string, unknown> }[];
+		};
+		const navEntry = entries.find((e) => e.detail.kind === "navigator");
+		expect(navEntry?.identity).toEqual({ kind: "recipient-username", username: "alice" });
+		expect(navEntry?.detail.entryIds).toEqual(navBody.entries.map((e) => e.id));
+		expect(JSON.stringify(navEntry?.detail)).not.toContain(navBody.entries[0]?.body ?? "\0impossible\0");
+	});
+
+	it("records a QA answer with the query and citations, never the synthesized answer text", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		const res = await call("/api/qa", {
+			method: "POST",
+			headers: { "content-type": "application/json", Cookie: cookie },
+			body: JSON.stringify({ question: "What happened in March?" }),
+		});
+		const qaBody = (await res.json()) as { answer: string; citations: string[]; status: string };
+
+		const auditRes = await call("/admin/audit-log", { headers: { Authorization: `Bearer ${OPERATOR_TOKEN}` } });
+		const { entries } = (await auditRes.json()) as { entries: { detail: Record<string, unknown> }[] };
+		const qaEntry = entries.find((e) => e.detail.kind === "qa");
+		expect(qaEntry?.detail).toEqual({ kind: "qa", question: "What happened in March?", citationIds: qaBody.citations, status: qaBody.status });
+		expect(qaEntry?.detail).not.toHaveProperty("answer");
+	});
+
+	describe("GET /admin/audit-log (operator-only, read-only)", () => {
+		it("rejects with no operator token (401)", async () => {
+			const res = await call("/admin/audit-log");
+			expect(res.status).toBe(401);
+		});
+
+		it("rejects a wrong operator token (401)", async () => {
+			const res = await call("/admin/audit-log", { headers: { Authorization: "Bearer wrong-operator-token" } });
+			expect(res.status).toBe(401);
+		});
+
+		it("returns 405 with an Allow header for a non-GET method", async () => {
+			const res = await call("/admin/audit-log", { method: "POST", headers: { Authorization: `Bearer ${OPERATOR_TOKEN}` } });
+			expect(res.status).toBe(405);
+			expect(res.headers.get("Allow")).toBe("GET");
+		});
+
+		it("returns 200 with an entries array for a valid operator token", async () => {
+			const res = await call("/admin/audit-log", { headers: { Authorization: `Bearer ${OPERATOR_TOKEN}` } });
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as { entries: unknown[]; cursor: string | null };
+			expect(Array.isArray(body.entries)).toBe(true);
+		});
+	});
+});
+
 describe("recipient auth (#18)", () => {
 	describe("POST /admin/accounts (operator-only provisioning)", () => {
 		it("creates an account and rejects a duplicate username", async () => {
