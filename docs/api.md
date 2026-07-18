@@ -385,7 +385,9 @@ output via `GET /demo/flags` above, by `demo/demoHighlights.ts` which exposes
 above, and by their own test suites) — they are not exposed as standalone HTTP
 endpoints. See the README's "Generic tools" section for what each one does.
 
-This document covers every route `src/index.ts` on this branch actually serves. Other
-suxos-net branches/PRs may add further routes (e.g. access scoping, an audit log,
-trusted-reference curation) — once one of those merges to `main`, update this file in
-the same PR or a prompt follow-up.
+This document covers every `/api/*`, `/healthz`, and `/demo/*` route `src/index.ts`
+serves. It does not yet cover the recipient-auth (`/login`, `/logout`) or operator-only
+`/admin/*` routes (`/admin/accounts`, `/admin/accounts/reset`, `/admin/audit-log`,
+`/admin/references*`) — those are documented in the relevant module's own header
+comments (`src/auth/routes.ts`, `src/audit/routes.ts`, `src/references/routes.ts`) and
+exercised in `src/index.test.ts`, but not written up here yet.
