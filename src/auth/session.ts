@@ -19,6 +19,21 @@ export interface SessionPayload {
 	expiresAt: number;
 }
 
+/**
+ * Fail CLOSED when SESSION_SECRET is unset/empty (mirrors OPERATOR_TOKEN's guard in
+ * routes.ts). An empty HMAC key is a well-known constant, so signing sessions with it
+ * would let anyone forge a valid cookie for any username and bypass the recipient-auth
+ * gate entirely (suxos-net#35 security-review HIGH). Sign-side throws (never issue a
+ * forgeable token); verify-side rejects (never accept one).
+ */
+function assertSessionSecret(secret: string): void {
+	if (!secret) {
+		throw new Error(
+			"SESSION_SECRET is not configured — refusing to sign a session token with an empty key. Set it via `wrangler secret put SESSION_SECRET`.",
+		);
+	}
+}
+
 async function hmacSha256Hex(secret: string, data: string): Promise<string> {
 	const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
 		"sign",
@@ -33,6 +48,7 @@ async function hmacSha256Hex(secret: string, data: string): Promise<string> {
  * signature over both prevents forging or extending a session without the secret.
  */
 export async function createSessionToken(username: string, secret: string, now: number = Date.now()): Promise<string> {
+	assertSessionSecret(secret);
 	const expiresAt = now + SESSION_DURATION_MS;
 	const payload = `${username}.${expiresAt}`;
 	const signature = await hmacSha256Hex(secret, payload);
@@ -44,6 +60,10 @@ export async function verifySessionToken(
 	secret: string,
 	now: number = Date.now(),
 ): Promise<SessionPayload | null> {
+	// Fail closed: with no secret, verification would accept a signature computed under
+	// the well-known empty key — reject every session instead (suxos-net#35 HIGH).
+	if (!secret) return null;
+
 	const parts = token.split(".");
 	if (parts.length !== 3) return null;
 	const [username, expiresAtRaw, signatureHex] = parts;

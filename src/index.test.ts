@@ -513,6 +513,24 @@ describe("recipient auth (#18)", () => {
 			const res = await call("/api/navigator", { headers: { Cookie: `suxos_session=${expiredToken}` } });
 			expect(res.status).toBe(401);
 		});
+
+		// suxos-net#35 HIGH: an unset SESSION_SECRET must fail CLOSED, not sign/verify
+		// sessions under the well-known empty key (which would let anyone forge a cookie).
+		it("refuses to SIGN a session token when SESSION_SECRET is empty", async () => {
+			const { createSessionToken } = await import("./auth/session");
+			await expect(createSessionToken("alice", "")).rejects.toThrow(/SESSION_SECRET/);
+		});
+
+		it("rejects (never accepts) a session token VERIFIED with an empty secret", async () => {
+			const { createSessionToken, verifySessionToken } = await import("./auth/session");
+			// Token legitimately signed under the real secret...
+			const realToken = await createSessionToken("alice", ENV.SESSION_SECRET);
+			// ...must still be rejected if the server's secret is unset (fail closed).
+			expect(await verifySessionToken(realToken, "")).toBeNull();
+			// And an attacker-forged empty-key token is likewise rejected.
+			const emptyKeySig = "alice.9999999999999.deadbeef";
+			expect(await verifySessionToken(emptyKeySig, "")).toBeNull();
+		});
 	});
 
 	describe("hard constraint: no public self-serve signup route", () => {
