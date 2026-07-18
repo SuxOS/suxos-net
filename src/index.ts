@@ -21,6 +21,9 @@ export interface Env {
 	// HMAC signing secret for recipient session cookies (#18). Set via
 	// `wrangler secret put SESSION_SECRET` — never a `vars` entry, never committed.
 	SESSION_SECRET: string;
+	// Bearer secret for operator-only /admin/* routes (#18). Set via
+	// `wrangler secret put OPERATOR_TOKEN`. Fails closed when unset (admin → 401).
+	OPERATOR_TOKEN: string;
 }
 
 // TODO: real Cloudflare Access policy (per-recipient OAuth invites) is deferred —
@@ -287,9 +290,10 @@ export default {
 
 		// --- Operator-only admin routes: account provisioning + reset. No self-serve
 		// signup exists anywhere in this Worker — these are the only ways an account
-		// is created or a password changed, and both are reachable only inside this
-		// staging Worker's assertStagingAccess gate above (a real deployment fronts
-		// this with the operator's own Cloudflare Access policy, unchanged).
+		// is created or a password changed. Each handler independently enforces an
+		// operator bearer token (OPERATOR_TOKEN) and fails closed if it is unset, so
+		// these routes are NOT exposed on a bare `*.workers.dev` deploy even though
+		// no Cloudflare Access edge fronts this staging Worker yet.
 		if (url.pathname === "/admin/accounts") return withSecurityHeaders(await handleAdminCreateAccount(request, env));
 		if (url.pathname === "/admin/accounts/reset") return withSecurityHeaders(await handleAdminResetPassword(request, env));
 

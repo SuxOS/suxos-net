@@ -1,12 +1,13 @@
 /**
  * HTTP handlers for recipient login/session and operator-only account admin (#18).
  * Wired into src/index.ts. No route in this file is self-serve signup — /login only
- * verifies an existing account, and the /admin/* routes are for the operator only
- * (reachable only behind the Worker-wide assertStagingAccess gate, which stands in
- * for the operator's Cloudflare Access gate in this staging deployment, unchanged).
+ * verifies an existing account, and the /admin/* routes are for the operator only.
+ * Operator routes independently require a bearer OPERATOR_TOKEN (see assertOperator):
+ * the Worker never assumes a Cloudflare Access edge exists in front of it, so admin
+ * provisioning/reset is safe even on a bare `*.workers.dev` deployment.
  */
 
-import { verifyPassword } from "./crypto";
+import { timingSafeEqual, verifyPassword } from "./crypto";
 import { recipientIdentity } from "./identity";
 import { buildLogoutCookie, buildSessionCookie, createSessionToken, extractSessionToken, verifySessionToken } from "./session";
 import { checkLockout, clearFailedAttempts, createAccount, getAccount, recordFailedAttempt, resetPassword } from "./store";
@@ -14,6 +15,10 @@ import { checkLockout, clearFailedAttempts, createAccount, getAccount, recordFai
 export interface AuthEnv {
 	NAV_CACHE: KVNamespace;
 	SESSION_SECRET: string;
+	// Shared secret for operator-only /admin/* routes. Set via
+	// `wrangler secret put OPERATOR_TOKEN` — never a `vars` entry, never committed.
+	// When unset, assertOperator fails closed (every admin request → 401).
+	OPERATOR_TOKEN: string;
 }
 
 interface ApiError {
@@ -125,14 +130,47 @@ export function unauthorizedResponse(): Response {
 	return errorResponse(401, { error: "authentication required" }, { "WWW-Authenticate": "Cookie" });
 }
 
+function operatorUnauthorizedResponse(): Response {
+	return errorResponse(401, { error: "operator authentication required" }, { "WWW-Authenticate": "Bearer" });
+}
+
+/** Extracts the token from an `Authorization: Bearer <token>` header, or null. */
+function extractBearerToken(request: Request): string | null {
+	const header = request.headers.get("Authorization");
+	if (!header) return null;
+	const match = /^Bearer (.+)$/.exec(header);
+	return match ? match[1] : null;
+}
+
+/**
+ * Gate for operator-only /admin/* routes. Requires an `Authorization: Bearer` token
+ * that constant-time-matches env.OPERATOR_TOKEN. Fails CLOSED when the token is unset
+ * or missing — an unconfigured Worker rejects every admin request rather than exposing
+ * account provisioning/reset. Both sides are SHA-256'd to fixed 32-byte digests before
+ * comparison so timingSafeEqual never leaks token length. Returns a 401 Response to
+ * short-circuit the handler, or null when the caller is a verified operator.
+ */
+async function assertOperator(request: Request, env: AuthEnv): Promise<Response | null> {
+	const provided = extractBearerToken(request);
+	if (!env.OPERATOR_TOKEN || !provided) return operatorUnauthorizedResponse();
+	const encoder = new TextEncoder();
+	const providedDigest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(provided)));
+	const expectedDigest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(env.OPERATOR_TOKEN)));
+	if (!timingSafeEqual(providedDigest, expectedDigest)) return operatorUnauthorizedResponse();
+	return null;
+}
+
 /**
  * POST /admin/accounts — operator-only, creates one account for one recipient.
- * Never self-serve: reachable only inside this staging Worker's existing
- * assertStagingAccess gate (real deployments front this with the operator's own
- * Cloudflare Access policy, unchanged — see src/index.ts).
+ * Never self-serve: requires a valid operator bearer token (assertOperator). A real
+ * deployment may additionally front this with Cloudflare Access, but the token gate
+ * stands on its own so a bare `*.workers.dev` deploy is not exposed.
  */
 export async function handleAdminCreateAccount(request: Request, env: AuthEnv): Promise<Response> {
 	if (request.method !== "POST") return errorResponse(405, { error: "method not allowed, expected POST" }, { Allow: "POST" });
+
+	const denied = await assertOperator(request, env);
+	if (denied) return denied;
 
 	const parsedBody = await parseJsonBody(request);
 	if ("error" in parsedBody) return parsedBody.error;
@@ -148,6 +186,9 @@ export async function handleAdminCreateAccount(request: Request, env: AuthEnv): 
 /** POST /admin/accounts/reset — operator-only direct password reset, no email flow. */
 export async function handleAdminResetPassword(request: Request, env: AuthEnv): Promise<Response> {
 	if (request.method !== "POST") return errorResponse(405, { error: "method not allowed, expected POST" }, { Allow: "POST" });
+
+	const denied = await assertOperator(request, env);
+	if (denied) return denied;
 
 	const parsedBody = await parseJsonBody(request);
 	if ("error" in parsedBody) return parsedBody.error;

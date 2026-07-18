@@ -11,6 +11,7 @@ const ENV: Env = {
 	STAGING: "1",
 	ACCESS_STAGING_IDENTITY: "dev@localhost",
 	SESSION_SECRET: "test-session-secret-do-not-use-in-prod",
+	OPERATOR_TOKEN: "test-operator-token-do-not-use-in-prod",
 };
 
 function req(path: string, init?: RequestInit): Request {

@@ -4,12 +4,15 @@ import { createMemoryKv } from "./test/kvMock";
 
 let ENV: Env;
 
+const OPERATOR_TOKEN = "test-operator-token-do-not-use-in-prod";
+
 beforeEach(() => {
 	ENV = {
 		NAV_CACHE: createMemoryKv(),
 		STAGING: "1",
 		ACCESS_STAGING_IDENTITY: "dev@localhost",
 		SESSION_SECRET: "test-session-secret-do-not-use-in-prod",
+		OPERATOR_TOKEN,
 	};
 });
 
@@ -25,6 +28,15 @@ function jsonBody(body: unknown): RequestInit {
 	return { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) };
 }
 
+/** Like jsonBody but adds the operator bearer token required by /admin/* routes. */
+function adminBody(body: unknown): RequestInit {
+	return {
+		method: "POST",
+		headers: { "content-type": "application/json", Authorization: `Bearer ${OPERATOR_TOKEN}` },
+		body: JSON.stringify(body),
+	};
+}
+
 /** Extracts just the `name=value` portion of a Set-Cookie header for reuse as a request Cookie header. */
 function cookieHeaderFrom(setCookie: string | null): string {
 	if (!setCookie) throw new Error("expected a Set-Cookie header");
@@ -32,7 +44,7 @@ function cookieHeaderFrom(setCookie: string | null): string {
 }
 
 async function createAccountAndLogin(username: string, password: string, env: Env = ENV): Promise<string> {
-	const createRes = await worker.fetch(req("/admin/accounts", jsonBody({ username, password })), env);
+	const createRes = await worker.fetch(req("/admin/accounts", adminBody({ username, password })), env);
 	expect(createRes.status).toBe(201);
 	const loginRes = await worker.fetch(req("/login", jsonBody({ username, password })), env);
 	expect(loginRes.status).toBe(200);
@@ -279,22 +291,46 @@ describe("unknown routes", () => {
 describe("recipient auth (#18)", () => {
 	describe("POST /admin/accounts (operator-only provisioning)", () => {
 		it("creates an account and rejects a duplicate username", async () => {
-			const first = await call("/admin/accounts", jsonBody({ username: "bob", password: "operator-set-password-1" }));
+			const first = await call("/admin/accounts", adminBody({ username: "bob", password: "operator-set-password-1" }));
 			expect(first.status).toBe(201);
 
-			const dupe = await call("/admin/accounts", jsonBody({ username: "bob", password: "some-other-password" }));
+			const dupe = await call("/admin/accounts", adminBody({ username: "bob", password: "some-other-password" }));
 			expect(dupe.status).toBe(409);
 		});
 
 		it("rejects a password shorter than 8 characters", async () => {
-			const res = await call("/admin/accounts", jsonBody({ username: "shorty", password: "short" }));
+			const res = await call("/admin/accounts", adminBody({ username: "shorty", password: "short" }));
 			expect(res.status).toBe(409);
+		});
+
+		it("rejects provisioning with no operator token (401), and creates no account", async () => {
+			const res = await call("/admin/accounts", jsonBody({ username: "mallory", password: "attacker-chosen-pw-1" }));
+			expect(res.status).toBe(401);
+			expect(res.headers.get("WWW-Authenticate")).toBe("Bearer");
+			// the would-be account must not exist — no self-provisioning happened
+			expect(await ENV.NAV_CACHE.get("auth:account:mallory")).toBeNull();
+		});
+
+		it("rejects provisioning with a wrong operator token (401)", async () => {
+			const res = await call("/admin/accounts", {
+				method: "POST",
+				headers: { "content-type": "application/json", Authorization: "Bearer wrong-operator-token" },
+				body: JSON.stringify({ username: "mallory", password: "attacker-chosen-pw-1" }),
+			});
+			expect(res.status).toBe(401);
+		});
+
+		it("fails closed when OPERATOR_TOKEN is unset — even a bearer header is rejected", async () => {
+			const env: Env = { ...ENV, NAV_CACHE: createMemoryKv(), OPERATOR_TOKEN: "" };
+			const res = await worker.fetch(req("/admin/accounts", adminBody({ username: "mallory", password: "attacker-chosen-pw-1" })), env);
+			expect(res.status).toBe(401);
+			expect(await env.NAV_CACHE.get("auth:account:mallory")).toBeNull();
 		});
 	});
 
 	describe("POST /login", () => {
 		it("logs in with correct credentials and sets an HttpOnly Secure SameSite=Strict cookie", async () => {
-			await call("/admin/accounts", jsonBody({ username: "carol", password: "a-real-password-123" }));
+			await call("/admin/accounts", adminBody({ username: "carol", password: "a-real-password-123" }));
 			const res = await call("/login", jsonBody({ username: "carol", password: "a-real-password-123" }));
 			expect(res.status).toBe(200);
 
@@ -307,7 +343,7 @@ describe("recipient auth (#18)", () => {
 		});
 
 		it("rejects a wrong password with a generic 401", async () => {
-			await call("/admin/accounts", jsonBody({ username: "dave", password: "correct-password-here" }));
+			await call("/admin/accounts", adminBody({ username: "dave", password: "correct-password-here" }));
 			const res = await call("/login", jsonBody({ username: "dave", password: "wrong-password-here" }));
 			expect(res.status).toBe(401);
 			const body = (await res.json()) as { error: string };
@@ -322,7 +358,7 @@ describe("recipient auth (#18)", () => {
 		});
 
 		it("locks out after repeated failed attempts (rate limiting)", async () => {
-			await call("/admin/accounts", jsonBody({ username: "erin", password: "correct-password-here" }));
+			await call("/admin/accounts", adminBody({ username: "erin", password: "correct-password-here" }));
 
 			let lastStatus = 0;
 			for (let i = 0; i < 5; i++) {
@@ -340,9 +376,9 @@ describe("recipient auth (#18)", () => {
 
 	describe("POST /admin/accounts/reset", () => {
 		it("resets a recipient's password directly, and the new password works while the old one doesn't", async () => {
-			await call("/admin/accounts", jsonBody({ username: "frank", password: "original-password-1" }));
+			await call("/admin/accounts", adminBody({ username: "frank", password: "original-password-1" }));
 
-			const resetRes = await call("/admin/accounts/reset", jsonBody({ username: "frank", password: "brand-new-password-1" }));
+			const resetRes = await call("/admin/accounts/reset", adminBody({ username: "frank", password: "brand-new-password-1" }));
 			expect(resetRes.status).toBe(200);
 
 			const oldLogin = await call("/login", jsonBody({ username: "frank", password: "original-password-1" }));
@@ -353,15 +389,26 @@ describe("recipient auth (#18)", () => {
 		});
 
 		it("returns 404 for resetting a nonexistent account", async () => {
-			const res = await call("/admin/accounts/reset", jsonBody({ username: "ghost", password: "some-password-1" }));
+			const res = await call("/admin/accounts/reset", adminBody({ username: "ghost", password: "some-password-1" }));
 			expect(res.status).toBe(404);
+		});
+
+		it("rejects a reset with no operator token (401), leaving the password unchanged", async () => {
+			await call("/admin/accounts", adminBody({ username: "ivan", password: "original-password-1" }));
+
+			const res = await call("/admin/accounts/reset", jsonBody({ username: "ivan", password: "attacker-reset-pw-1" }));
+			expect(res.status).toBe(401);
+
+			// the attacker's reset must NOT have taken effect — original still works, new does not
+			expect((await call("/login", jsonBody({ username: "ivan", password: "attacker-reset-pw-1" }))).status).toBe(401);
+			expect((await call("/login", jsonBody({ username: "ivan", password: "original-password-1" }))).status).toBe(200);
 		});
 	});
 
 	describe("hard constraint: password hashes are never plaintext or reversible", () => {
 		it("the raw stored KV record never contains the plaintext password string", async () => {
 			const plaintextPassword = "SuperSecretPlaintext!42";
-			await call("/admin/accounts", jsonBody({ username: "hank", password: plaintextPassword }));
+			await call("/admin/accounts", adminBody({ username: "hank", password: plaintextPassword }));
 
 			const raw = await ENV.NAV_CACHE.get("auth:account:hank");
 			expect(raw).toBeTruthy();
