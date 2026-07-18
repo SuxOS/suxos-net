@@ -25,3 +25,16 @@ and unmerged. This per-batch pipeline only ever ships a new PR against `main`; i
 commits onto another open PR's branch. If you pick up an issue like this, drop it and say so — it needs a
 human (or a differently-scoped run) to push directly onto `feat/recipient-auth`, or it needs #35 merged
 first, neither of which this pipeline shape can do.
+
+## A real Durable Object atomic-counter primitive now exists on `main` (issue #55)
+
+`src/durableObjects/rateLimitCounter.ts` (`RateLimitCounter`, bound as `RATE_LIMITER` in `wrangler.jsonc`)
+is the atomic increment-and-check primitive that #49, #24, and #18/#19/#20 each independently said they
+needed and didn't have. Reuse it (or its pattern) rather than re-deriving another one. Two things about
+its shape are load-bearing, not incidental: (1) it deliberately implements the plain `fetch`-based
+`DurableObject` interface, **not** `import { DurableObject } from "cloudflare:workers"` — this repo's
+`npm test` runs under plain-Node vitest with no Miniflare/workerd pool, and importing `cloudflare:workers`
+would break at import time outside the real Workers runtime; (2) tests exercise it through
+`src/testUtils/durableObject.ts`'s in-memory fake, which queues calls per DO-instance name so only one
+`fetch()` runs at a time — that queueing is what makes the fake capable of actually catching a concurrency
+regression (an unserialized fake would race exactly like the KV version this replaced, silently).
