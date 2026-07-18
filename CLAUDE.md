@@ -67,3 +67,13 @@ Verified 2026-07-18 (issue #32 triage): PR #42 (`build: drain low-priority backl
 build (or an issue another one depends on, like #32 on #30/#31) shows as closed, don't take that as given:
 grep/read the file(s) it claims to touch on `main` before relying on it. A batch PR's `Closes #N` list is
 only as trustworthy as whoever wrote it — it is not a substitute for checking the tree.
+
+## A `building` label doesn't mean the foundation exists on `main` yet either
+
+Verified 2026-07-18 (issues #65/#71 triage): both name files under `src/references/` (`store.ts`,
+`guard.ts`, a `listReferences` function) that issue #19 is supposed to add — but as of this check `git
+ls-tree -r main --name-only` shows no `src/references/` directory at all, even though #19 is labeled
+`building` (an in-progress claim, not a completed one). Same root cause as the `#35`/`src/review.ts`
+clusters above, just caught earlier this time: don't infer a dependency has landed from its label or from
+another issue's prose — `git ls-tree`/grep `main` for the actual file before building on top of it. If it's
+not there, drop and release the claim; the foundation issue may still be mid-build by a concurrent run.
