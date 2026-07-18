@@ -11,6 +11,7 @@ import { timingSafeEqual, verifyPasswordConstantTime } from "./crypto";
 import { recipientIdentity } from "./identity";
 import { buildLogoutCookie, buildSessionCookie, createSessionToken, extractSessionToken, verifySessionToken } from "./session";
 import { admitLoginAttempt, clearFailedAttempts, createAccount, getAccount, resetPassword } from "./store";
+import { readJsonBodyWithLimit } from "../httpBody";
 
 export interface AuthEnv {
 	NAV_CACHE: KVNamespace;
@@ -43,12 +44,14 @@ async function parseJsonBody(request: Request): Promise<{ body: Record<string, u
 	if (!contentType.includes("application/json")) {
 		return { error: errorResponse(400, { error: "expected Content-Type: application/json", field: "content-type" }) };
 	}
-	let parsed: unknown;
-	try {
-		parsed = await request.json();
-	} catch {
+	const bodyResult = await readJsonBodyWithLimit(request);
+	if (!bodyResult.ok) {
+		if (bodyResult.kind === "too-large") {
+			return { error: errorResponse(413, { error: `request body exceeds ${bodyResult.maxBytes} byte limit` }) };
+		}
 		return { error: errorResponse(400, { error: "request body must be valid JSON" }) };
 	}
+	const parsed = bodyResult.parsed;
 	if (typeof parsed !== "object" || parsed === null) {
 		return { error: errorResponse(400, { error: "request body must be a JSON object" }) };
 	}

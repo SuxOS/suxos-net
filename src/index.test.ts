@@ -200,6 +200,16 @@ describe("POST /api/qa (requires a recipient session)", () => {
 		expect(res.status).toBe(405);
 		expect(res.headers.get("Allow")).toBe("POST");
 	});
+
+	it("returns 413 for an oversized body instead of parsing it (#63)", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		const res = await call("/api/qa", {
+			method: "POST",
+			headers: { "content-type": "application/json", Cookie: cookie },
+			body: JSON.stringify({ question: "x".repeat(100_000) }),
+		});
+		expect(res.status).toBe(413);
+	});
 });
 
 describe("POST /api/review (requires a recipient session)", () => {
@@ -271,13 +281,46 @@ describe("POST /api/review (requires a recipient session)", () => {
 		expect(body.field).toBe("claims[0].id");
 	});
 
-	it("returns a structured 400 when references exceeds the array-length cap (#9)", async () => {
+	it("rejects a references field in the request body (#19 runtime guard: curated-store-only)", async () => {
 		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
-		const tooMany = Array.from({ length: 201 }, (_, i) => ({ id: `ref-${i}`, text: "filler", source: "filler source" }));
-		const res = await call("/api/review", reviewBody(cookie, { claims: VALID_CLAIMS, references: tooMany }));
+		const attemptedInjection = [{ id: "ref-injected", text: "not curated", source: "not curated source" }];
+		const res = await call("/api/review", reviewBody(cookie, { claims: VALID_CLAIMS, references: attemptedInjection }));
 		expect(res.status).toBe(400);
 		const body = (await res.json()) as { error: string; field?: string };
 		expect(body.field).toBe("references");
+	});
+
+	it("returns 413 when the body exceeds the byte-size limit (#63)", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		const hugeClaims = [{ id: "claim-huge", text: "x".repeat(5_000_000), citations: [] }];
+		const res = await call("/api/review", reviewBody(cookie, { claims: hugeClaims }));
+		expect(res.status).toBe(413);
+	});
+
+	it("uses only curated (not caller-supplied) references for reference-consistency flags (#19)", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		await call(
+			"/admin/references",
+			adminBody({
+				id: "ref-curated-1",
+				text: "Synthetic Compound Zeta is metabolized by the synthetic pathway.",
+				source: "SYNTHETIC-TEST Reference Manual, fictional edition",
+				curator: "test-curator",
+				scopeOfApplicability: "fictional demo persona only",
+			}),
+		);
+
+		const conflictingClaim = [
+			{
+				id: "claim-conflict",
+				text: "Synthetic Compound Zeta is not metabolized by the synthetic pathway.",
+				citations: [],
+			},
+		];
+		const res = await call("/api/review", reviewBody(cookie, { claims: conflictingClaim }));
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { referenceConsistency: Array<{ appearsInconsistentWith: string }> };
+		expect(body.referenceConsistency.some((flag) => flag.appearsInconsistentWith === "ref-curated-1")).toBe(true);
 	});
 
 	it("returns 405 with an Allow header for a non-POST method", async () => {
@@ -505,6 +548,93 @@ describe("access audit log (#20)", () => {
 	});
 });
 
+describe("trusted-reference curation (#19)", () => {
+	const FICTIONAL_REFERENCE = {
+		id: "ref-demo-1",
+		text: "Fictional Compound Gamma has a demo interaction with fictional Compound Delta.",
+		source: "SYNTHETIC-TEST Reference Manual, fictional edition",
+		curator: "test-curator",
+		scopeOfApplicability: "fictional demo persona only",
+	};
+
+	describe("POST /admin/references (operator-only create)", () => {
+		it("rejects with no operator token (401)", async () => {
+			const res = await call("/admin/references", jsonBody(FICTIONAL_REFERENCE));
+			expect(res.status).toBe(401);
+		});
+
+		it("creates a reference and rejects a duplicate id", async () => {
+			const first = await call("/admin/references", adminBody(FICTIONAL_REFERENCE));
+			expect(first.status).toBe(201);
+			const created = (await first.json()) as { id: string; dateAdded: string };
+			expect(created.id).toBe(FICTIONAL_REFERENCE.id);
+			expect(typeof created.dateAdded).toBe("string");
+
+			const dupe = await call("/admin/references", adminBody(FICTIONAL_REFERENCE));
+			expect(dupe.status).toBe(409);
+		});
+
+		it("returns a structured 400 for a missing field", async () => {
+			const { curator: _curator, ...missingCurator } = FICTIONAL_REFERENCE;
+			const res = await call("/admin/references", adminBody(missingCurator));
+			expect(res.status).toBe(400);
+			const body = (await res.json()) as { field?: string };
+			expect(body.field).toBe("curator");
+		});
+	});
+
+	describe("GET /admin/references (operator-only list)", () => {
+		it("rejects with no operator token (401)", async () => {
+			const res = await call("/admin/references");
+			expect(res.status).toBe(401);
+		});
+
+		it("lists a created reference", async () => {
+			await call("/admin/references", adminBody(FICTIONAL_REFERENCE));
+			const res = await call("/admin/references", { headers: { Authorization: `Bearer ${OPERATOR_TOKEN}` } });
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as { references: Array<{ id: string }> };
+			expect(body.references.some((reference) => reference.id === FICTIONAL_REFERENCE.id)).toBe(true);
+		});
+	});
+
+	describe("POST /admin/references/update and /admin/references/delete", () => {
+		it("updates a field without touching dateAdded", async () => {
+			const createRes = await call("/admin/references", adminBody(FICTIONAL_REFERENCE));
+			const created = (await createRes.json()) as { dateAdded: string };
+
+			const updateRes = await call(
+				"/admin/references/update",
+				adminBody({ id: FICTIONAL_REFERENCE.id, text: "Updated fictional text." }),
+			);
+			expect(updateRes.status).toBe(200);
+			const updated = (await updateRes.json()) as { text: string; dateAdded: string };
+			expect(updated.text).toBe("Updated fictional text.");
+			expect(updated.dateAdded).toBe(created.dateAdded);
+		});
+
+		it("returns 404 updating a reference that does not exist", async () => {
+			const res = await call("/admin/references/update", adminBody({ id: "no-such-ref", text: "x" }));
+			expect(res.status).toBe(404);
+		});
+
+		it("deletes a reference, after which it no longer appears in the list", async () => {
+			await call("/admin/references", adminBody(FICTIONAL_REFERENCE));
+			const deleteRes = await call("/admin/references/delete", adminBody({ id: FICTIONAL_REFERENCE.id }));
+			expect(deleteRes.status).toBe(200);
+
+			const listRes = await call("/admin/references", { headers: { Authorization: `Bearer ${OPERATOR_TOKEN}` } });
+			const body = (await listRes.json()) as { references: Array<{ id: string }> };
+			expect(body.references.some((reference) => reference.id === FICTIONAL_REFERENCE.id)).toBe(false);
+		});
+
+		it("returns 404 deleting a reference that does not exist", async () => {
+			const res = await call("/admin/references/delete", adminBody({ id: "no-such-ref" }));
+			expect(res.status).toBe(404);
+		});
+	});
+});
+
 describe("recipient auth (#18)", () => {
 	describe("POST /admin/accounts (operator-only provisioning)", () => {
 		it("creates an account and rejects a duplicate username", async () => {
@@ -602,6 +732,11 @@ describe("recipient auth (#18)", () => {
 			const lockedRes = await call("/login", jsonBody({ username: "erin", password: "correct-password-here" }));
 			expect(lockedRes.status).toBe(429);
 			expect(lockedRes.headers.get("Retry-After")).toBeTruthy();
+		});
+
+		it("returns 413 for an oversized body instead of parsing it (#63)", async () => {
+			const res = await call("/login", jsonBody({ username: "x".repeat(100_000), password: "whatever" }));
+			expect(res.status).toBe(413);
 		});
 
 		it("holds the lockout under a CONCURRENT burst — closes the check/record straddle (#35)", async () => {
