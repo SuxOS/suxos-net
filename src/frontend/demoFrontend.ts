@@ -26,6 +26,7 @@ export const DEMO_HTML = `<!doctype html>
   <button id="tab-navigator" class="tab" role="tab" type="button" aria-selected="true">Navigator</button>
   <button id="tab-qa" class="tab" role="tab" type="button" aria-selected="false">Ask a question</button>
   <button id="tab-flags" class="tab" role="tab" type="button" aria-selected="false">Flags</button>
+  <button id="tab-highlights" class="tab" role="tab" type="button" aria-selected="false">Highlights</button>
 </nav>
 
 <main>
@@ -61,6 +62,10 @@ export const DEMO_HTML = `<!doctype html>
 
   <section id="panel-flags" class="panel" hidden>
     <div id="flags-content" aria-live="polite"></div>
+  </section>
+
+  <section id="panel-highlights" class="panel" hidden>
+    <div id="highlights-content" aria-live="polite"></div>
   </section>
 </main>
 
@@ -396,10 +401,46 @@ export const DEMO_JS = `(function () {
       });
   }
 
+  // --- Highlights tab ---
+
+  function renderHighlight(highlight) {
+    var icon = highlight.type === "tone" ? "⚑" : "⚠";
+    var label = highlight.type === "tone"
+      ? "Tone highlight — " + highlight.sourceId
+      : "Possible inconsistency — " + highlight.sourceId + " / " + highlight.relatedId;
+    var card = el("div", { class: "flag-card flag-caution" });
+    card.appendChild(el("div", { class: "flag-header" }, [
+      el("span", { class: "flag-icon", text: icon }),
+      el("span", { text: label }),
+    ]));
+    card.appendChild(confidenceBadge(highlight.confidence, "caution"));
+    card.appendChild(el("p", { class: "flag-note", text: highlight.note }));
+    return card;
+  }
+
+  function loadHighlights() {
+    var container = document.getElementById("highlights-content");
+    clear(container);
+    container.appendChild(el("p", { class: "loading", text: "Loading…" }));
+
+    fetch("/demo/highlights")
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        clear(container);
+        setNotice(data.notice);
+        container.appendChild(renderFlagSection("Highlights", data.highlights, renderHighlight, "No highlights detected."));
+      })
+      .catch(function () {
+        clear(container);
+        container.appendChild(el("p", { class: "error", text: "Could not load highlights right now." }));
+      });
+  }
+
   // --- Tabs & wiring ---
 
-  var TABS = ["navigator", "qa", "flags"];
+  var TABS = ["navigator", "qa", "flags", "highlights"];
   var flagsLoaded = false;
+  var highlightsLoaded = false;
 
   function showTab(name) {
     TABS.forEach(function (tab) {
@@ -409,6 +450,10 @@ export const DEMO_JS = `(function () {
     if (name === "flags" && !flagsLoaded) {
       flagsLoaded = true;
       loadFlags();
+    }
+    if (name === "highlights" && !highlightsLoaded) {
+      highlightsLoaded = true;
+      loadHighlights();
     }
   }
 

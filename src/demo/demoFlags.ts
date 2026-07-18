@@ -15,9 +15,10 @@ import {
 const NOTICE = "FICTIONAL DEMO DATA — not the user's real information. Do not treat as real.";
 
 export function buildDemoFlagsView() {
+	const selfConsistency = findInconsistencies(demoClaims);
 	return {
-		selfConsistency: findInconsistencies(demoClaims),
-		groundingSignals: findGroundingSignals(demoClaims),
+		selfConsistency,
+		groundingSignals: findGroundingSignals(demoClaims, selfConsistency),
 		referenceConsistency: flagAgainstReferences(demoClaimsForReferenceCheck, demoTrustedReferences),
 		citationIntegrity: checkCitationIntegrity(demoCitationBearingRecords, demoKnownCitationIds),
 		notice: NOTICE,

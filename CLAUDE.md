@@ -25,3 +25,19 @@ and unmerged. This per-batch pipeline only ever ships a new PR against `main`; i
 commits onto another open PR's branch. If you pick up an issue like this, drop it and say so — it needs a
 human (or a differently-scoped run) to push directly onto `feat/recipient-auth`, or it needs #35 merged
 first, neither of which this pipeline shape can do.
+
+### It's not just #35 — several never-merged foundations strand whole issue clusters
+
+The same root cause (an earlier `bot/issue-build-*` branch built real code, was never merged to `main`,
+and follow-up issues were then filed against that unmerged diff as if it were live) recurs beyond #35.
+Verified 2026-07-18 (issue #51) via `git ls-tree -r main --name-only`: none of `src/review.ts`,
+`src/auth/`, `src/audit/`, or `src/access/` exist on `main` today, even though commits building them
+exist on dangling branches (e.g. `src/review.ts` on `origin/bot/issue-build-29577656796`; the
+access/audit pair on `origin/bot/issue-build-29600508994`). Known-stranded open issues as of 2026-07-18:
+`#5, #9, #10, #12, #13` (target `src/review.ts` / `handleReview` / `POST /api/review`), `#18, #19, #20`
+(access-scoping/trusted-reference/audit-log layer on top of `src/auth/*`, same foundation as #35's
+`hold`), and `#32, #37, #38` (portal routes that depend on this foundation plus suxvault — also see the
+suxvault-access note above). Before starting any issue, check whether it names a file under `src/review.ts`,
+`src/auth/`, `src/audit/`, or `src/access/` — if so, confirm with `git ls-tree -r main --name-only` that
+the file still doesn't exist before assuming this note is stale, then drop the issue as blocked rather
+than rebuilding the foundation from scratch or re-deriving this from first principles.
