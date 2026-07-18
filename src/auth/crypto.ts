@@ -77,4 +77,30 @@ export async function verifyPassword(password: string, stored: PasswordHash): Pr
 	return timingSafeEqual(derived, expected);
 }
 
+/**
+ * A fixed decoy hash with the SAME cost parameters (iterations, salt length) as a
+ * real stored hash. It is a genuine PBKDF2 derivation of an unknowable random
+ * password, so no attacker-supplied password can ever match it. Used by
+ * verifyPasswordConstantTime to spend one full PBKDF2 on the "no such user" path,
+ * keeping login response timing independent of whether the username exists.
+ */
+export const DECOY_PASSWORD_HASH: PasswordHash = {
+	algorithm: "PBKDF2-HMAC-SHA256",
+	iterations: PBKDF2_ITERATIONS,
+	salt: "bb980c83452ee2c32235f2fe2afe6bfd",
+	hash: "929fb668da627cf9deb71d69d23d64062c7f2f6cdd857e687578962a3ded9d90",
+};
+
+/**
+ * Verifies a password while doing the SAME observable work whether or not the
+ * account exists. When `stored` is null (username not found), the verify runs
+ * against DECOY_PASSWORD_HASH so exactly one full-cost PBKDF2 is performed on
+ * every path — closing the username-enumeration timing side-channel. A missing
+ * account always returns false regardless of the (never-matching) decoy result.
+ */
+export async function verifyPasswordConstantTime(password: string, stored: PasswordHash | null): Promise<boolean> {
+	const valid = await verifyPassword(password, stored ?? DECOY_PASSWORD_HASH);
+	return stored !== null && valid;
+}
+
 export { toHex, fromHex };

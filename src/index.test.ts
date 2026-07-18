@@ -357,6 +357,20 @@ describe("recipient auth (#18)", () => {
 			expect(body.error).toBe("invalid username or password");
 		});
 
+		it("returns an identical error shape for a missing user and a wrong password (no timing/response enumeration)", async () => {
+			await call("/admin/accounts", adminBody({ username: "grace", password: "correct-password-here" }));
+
+			const wrongPasswordRes = await call("/login", jsonBody({ username: "grace", password: "wrong-password-here" }));
+			const missingUserRes = await call("/login", jsonBody({ username: "ghost", password: "wrong-password-here" }));
+
+			expect(missingUserRes.status).toBe(wrongPasswordRes.status);
+			expect(missingUserRes.status).toBe(401);
+			const missingBody = (await missingUserRes.json()) as { error: string };
+			const wrongBody = (await wrongPasswordRes.json()) as { error: string };
+			expect(missingBody).toEqual(wrongBody);
+			expect(missingBody.error).toBe("invalid username or password");
+		});
+
 		it("locks out after repeated failed attempts (rate limiting)", async () => {
 			await call("/admin/accounts", adminBody({ username: "erin", password: "correct-password-here" }));
 

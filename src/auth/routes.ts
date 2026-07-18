@@ -7,7 +7,7 @@
  * provisioning/reset is safe even on a bare `*.workers.dev` deployment.
  */
 
-import { timingSafeEqual, verifyPassword } from "./crypto";
+import { timingSafeEqual, verifyPasswordConstantTime } from "./crypto";
 import { recipientIdentity } from "./identity";
 import { buildLogoutCookie, buildSessionCookie, createSessionToken, extractSessionToken, verifySessionToken } from "./session";
 import { checkLockout, clearFailedAttempts, createAccount, getAccount, recordFailedAttempt, resetPassword } from "./store";
@@ -85,13 +85,12 @@ export async function handleLogin(request: Request, env: AuthEnv): Promise<Respo
 	// wrong — never leak which case it was (avoids username enumeration).
 	const genericFailure = () => errorResponse(401, { error: "invalid username or password" });
 
-	if (!account) {
-		await recordFailedAttempt(env.NAV_CACHE, username);
-		return genericFailure();
-	}
-
-	const valid = await verifyPassword(password, account.passwordHash);
-	if (!valid) {
+	// Always run exactly one full-cost PBKDF2 verify, even when the account does
+	// not exist (verifyPasswordConstantTime falls back to a decoy hash of identical
+	// cost). This keeps the "no such user" path the same observable work/latency as
+	// the "wrong password" path, closing the username-enumeration timing side-channel.
+	const valid = await verifyPasswordConstantTime(password, account?.passwordHash ?? null);
+	if (!account || !valid) {
 		await recordFailedAttempt(env.NAV_CACHE, username);
 		return genericFailure();
 	}
