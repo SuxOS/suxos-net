@@ -43,10 +43,25 @@ interface LockoutRecordRequest {
 interface LockoutClearRequest {
 	op: "lockoutClear";
 }
-type RateLimiterRequest = FixedWindowRequest | LockoutStatusRequest | LockoutRecordRequest | LockoutClearRequest;
+interface LockoutAdmitRequest {
+	op: "lockoutAdmit";
+	maxAttempts: number;
+	windowMs: number;
+}
+type RateLimiterRequest =
+	| FixedWindowRequest
+	| LockoutStatusRequest
+	| LockoutRecordRequest
+	| LockoutClearRequest
+	| LockoutAdmitRequest;
 
 export interface LockoutStatus {
 	locked: boolean;
+	retryAfterMs?: number;
+}
+
+export interface LockoutAdmitResult {
+	admitted: boolean;
 	retryAfterMs?: number;
 }
 
@@ -92,6 +107,8 @@ export class RateLimiterDO {
 			case "lockoutClear":
 				await this.storage.delete(LOCKOUT_SLOT);
 				return Response.json({ ok: true });
+			case "lockoutAdmit":
+				return Response.json(await this.lockoutAdmit(body.maxAttempts, body.windowMs));
 			default:
 				return Response.json({ error: "unknown op" }, { status: 400 });
 		}
@@ -140,6 +157,37 @@ export class RateLimiterDO {
 		}
 		await this.storage.put(LOCKOUT_SLOT, state);
 	}
+
+	/**
+	 * Atomic admission control for a login attempt — the single DO round-trip that
+	 * REPLACES the old check-then-(PBKDF2)-then-record split (suxos-net#35 residual
+	 * HIGH). The prior flow read the lock, ran a slow PBKDF2, then recorded a failure
+	 * as three separate steps: a concurrent burst of guesses all passed the read
+	 * (nothing recorded yet) and each got a full verify before any of them counted, so
+	 * an attacker got N attempts instead of `maxAttempts`. Counting the attempt HERE, at
+	 * entry, in the DO's single input-gated op means each concurrent request gets a
+	 * distinct sequential count: the first `maxAttempts` are admitted (and go on to the
+	 * verify), every one past that is rejected and locked BEFORE any PBKDF2 runs. A
+	 * successful login clears the counter (lockoutClear), so honest users reset.
+	 */
+	private async lockoutAdmit(maxAttempts: number, windowMs: number, now: number = Date.now()): Promise<LockoutAdmitResult> {
+		const existing = await this.storage.get<LockoutState>(LOCKOUT_SLOT);
+		// Already locked → reject WITHOUT counting, so more guesses can't extend the lock.
+		if (existing?.lockedUntil && now < existing.lockedUntil) {
+			return { admitted: false, retryAfterMs: existing.lockedUntil - now };
+		}
+		// Keep the running window, or start a fresh one once it has fully elapsed.
+		const state: LockoutState =
+			existing && now - existing.windowStartedAt <= windowMs ? existing : { failedAttempts: 0, windowStartedAt: now };
+		state.failedAttempts += 1;
+		if (state.failedAttempts > maxAttempts) {
+			state.lockedUntil = now + windowMs;
+			await this.storage.put(LOCKOUT_SLOT, state);
+			return { admitted: false, retryAfterMs: windowMs };
+		}
+		await this.storage.put(LOCKOUT_SLOT, state);
+		return { admitted: true };
+	}
 }
 
 // --- Typed client helpers used by the Worker. Each targets one DO instance keyed by
@@ -186,4 +234,18 @@ export async function recordLockoutFailure(
 
 export async function clearLockout(namespace: DurableObjectNamespace, username: string): Promise<void> {
 	await callDO(namespace, loginKey(username), { op: "lockoutClear" });
+}
+
+/**
+ * Atomically count this login attempt and report whether it may proceed. One DO
+ * round-trip — the whole point is that the count and the decision cannot be split by a
+ * concurrent request (see RateLimiterDO.lockoutAdmit).
+ */
+export async function admitLoginAttempt(
+	namespace: DurableObjectNamespace,
+	username: string,
+	maxAttempts: number,
+	windowMs: number,
+): Promise<LockoutAdmitResult> {
+	return callDO<LockoutAdmitResult>(namespace, loginKey(username), { op: "lockoutAdmit", maxAttempts, windowMs });
 }

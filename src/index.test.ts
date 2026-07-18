@@ -440,6 +440,26 @@ describe("recipient auth (#18)", () => {
 			expect(lockedRes.status).toBe(429);
 			expect(lockedRes.headers.get("Retry-After")).toBeTruthy();
 		});
+
+		it("holds the lockout under a CONCURRENT burst — closes the check/record straddle (#35)", async () => {
+			await call("/admin/accounts", adminBody({ username: "frank", password: "correct-password-here" }));
+
+			// 20 simultaneous wrong-password guesses against ONE username. The old flow
+			// read the lock, ran a slow PBKDF2, then recorded a failure as separate steps,
+			// so a burst all passed the read before anything was recorded and every guess
+			// reached the verify. Atomic admission counts each at entry: at most 5 reach the
+			// verify (401), the rest are locked out (429) before any PBKDF2 runs.
+			const burst = 20;
+			const results = await Promise.all(
+				Array.from({ length: burst }, () => call("/login", jsonBody({ username: "frank", password: "wrong-password" }))),
+			);
+			const statuses = results.map((r) => r.status);
+			const reachedVerify = statuses.filter((s) => s === 401).length;
+			const lockedOut = statuses.filter((s) => s === 429).length;
+			expect(reachedVerify).toBeLessThanOrEqual(5);
+			expect(lockedOut).toBeGreaterThanOrEqual(burst - 5);
+			expect(reachedVerify + lockedOut).toBe(burst);
+		});
 	});
 
 	describe("POST /admin/accounts/reset", () => {

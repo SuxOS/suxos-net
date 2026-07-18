@@ -13,7 +13,14 @@
  */
 
 import { hashPassword, type PasswordHash } from "./crypto";
-import { clearLockout, getLockoutStatus, recordLockoutFailure, type LockoutStatus } from "./rateLimiter";
+import {
+	admitLoginAttempt as admitLoginAttemptDO,
+	clearLockout,
+	getLockoutStatus,
+	type LockoutAdmitResult,
+	type LockoutStatus,
+	recordLockoutFailure,
+} from "./rateLimiter";
 
 const ACCOUNT_KEY_PREFIX = "auth:account:";
 
@@ -88,7 +95,17 @@ export async function resetPassword(kv: KVNamespace, username: string, newPasswo
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_WINDOW_MS = 15 * 60 * 1000;
 
-export type { LockoutStatus };
+export type { LockoutAdmitResult, LockoutStatus };
+
+/**
+ * Atomically count one login attempt and decide if it may proceed to a password verify.
+ * This is the login path's ONLY lockout gate — it must be called at handler entry
+ * (before the PBKDF2 verify), because counting-and-deciding in one atomic DO op is what
+ * closes the concurrent-burst race that a separate check-then-record could not (#35).
+ */
+export async function admitLoginAttempt(rateLimiter: DurableObjectNamespace, username: string): Promise<LockoutAdmitResult> {
+	return admitLoginAttemptDO(rateLimiter, username, MAX_FAILED_ATTEMPTS, LOCKOUT_WINDOW_MS);
+}
 
 export async function checkLockout(rateLimiter: DurableObjectNamespace, username: string): Promise<LockoutStatus> {
 	return getLockoutStatus(rateLimiter, username);

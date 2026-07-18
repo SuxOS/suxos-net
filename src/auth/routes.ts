@@ -10,7 +10,7 @@
 import { timingSafeEqual, verifyPasswordConstantTime } from "./crypto";
 import { recipientIdentity } from "./identity";
 import { buildLogoutCookie, buildSessionCookie, createSessionToken, extractSessionToken, verifySessionToken } from "./session";
-import { checkLockout, clearFailedAttempts, createAccount, getAccount, recordFailedAttempt, resetPassword } from "./store";
+import { admitLoginAttempt, clearFailedAttempts, createAccount, getAccount, resetPassword } from "./store";
 
 export interface AuthEnv {
 	NAV_CACHE: KVNamespace;
@@ -76,9 +76,14 @@ export async function handleLogin(request: Request, env: AuthEnv): Promise<Respo
 	if ("error" in parsed) return parsed.error;
 	const { username, password } = parsed;
 
-	const lockout = await checkLockout(env.RATE_LIMITER, username);
-	if (lockout.locked) {
-		const retryAfterSeconds = Math.ceil((lockout.retryAfterMs ?? 0) / 1000);
+	// Atomic admission gate: count this attempt AND decide, in one DO op, BEFORE the
+	// expensive PBKDF2 verify below. A concurrent burst against one username is therefore
+	// serialised into distinct sequential counts — at most MAX_FAILED_ATTEMPTS reach the
+	// verify, the rest are locked out here. (The old split check-then-record straddled the
+	// verify and let a burst slip past — suxos-net#35 residual HIGH.)
+	const admit = await admitLoginAttempt(env.RATE_LIMITER, username);
+	if (!admit.admitted) {
+		const retryAfterSeconds = Math.ceil((admit.retryAfterMs ?? 0) / 1000);
 		return errorResponse(429, { error: "too many failed login attempts; try again later" }, {
 			"Retry-After": String(retryAfterSeconds),
 		});
@@ -95,7 +100,8 @@ export async function handleLogin(request: Request, env: AuthEnv): Promise<Respo
 	// the "wrong password" path, closing the username-enumeration timing side-channel.
 	const valid = await verifyPasswordConstantTime(password, account?.passwordHash ?? null);
 	if (!account || !valid) {
-		await recordFailedAttempt(env.RATE_LIMITER, username);
+		// The attempt was already counted atomically at admission above — no separate
+		// record step (that split was the race). A wrong guess simply falls through.
 		return genericFailure();
 	}
 
