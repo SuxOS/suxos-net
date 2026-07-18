@@ -15,6 +15,9 @@ import {
 	unauthorizedResponse,
 } from "./auth/routes";
 import { isIpRequestAllowed } from "./auth/rateLimiter";
+import { recipientIdentity } from "./auth/identity";
+import { appendAuditEntry } from "./audit/log";
+import { handleAuditLogAdmin } from "./audit/routes";
 
 // The atomic rate-limit / lockout Durable Object must be re-exported from the Worker
 // entrypoint so wrangler can bind it (durable_objects.bindings in wrangler.jsonc).
@@ -163,17 +166,27 @@ async function handleNavigator(request: Request, env: Env): Promise<Response> {
 
 	const cacheKey = navCacheKey(verbosityRaw, timeScopeRaw);
 	const cached = await env.NAV_CACHE.get(cacheKey);
+	let view: NavigatorResponse;
 	if (cached !== null) {
 		// Only `entries` is what's worth caching — `generatedAt` must reflect this
 		// response's actual time, not whenever the cache entry was first computed (#7),
 		// or a caller relying on it for freshness would be misled once entries stop
 		// being static stubs.
-		const view: NavigatorResponse = { ...(JSON.parse(cached) as NavigatorResponse), generatedAt: new Date().toISOString() };
-		return withSecurityHeaders(Response.json(view));
+		view = { ...(JSON.parse(cached) as NavigatorResponse), generatedAt: new Date().toISOString() };
+	} else {
+		view = getNavigatorView(verbosityRaw, timeScopeRaw);
+		await env.NAV_CACHE.put(cacheKey, JSON.stringify(view), { expirationTtl: NAV_CACHE_TTL_SECONDS });
 	}
 
-	const view = getNavigatorView(verbosityRaw, timeScopeRaw);
-	await env.NAV_CACHE.put(cacheKey, JSON.stringify(view), { expirationTtl: NAV_CACHE_TTL_SECONDS });
+	// Audit trail (#20): who viewed which records, on every read — cache hit or miss —
+	// not just the response body a caller happens to see.
+	await appendAuditEntry(env.NAV_CACHE, recipientIdentity(username), {
+		kind: "navigator",
+		verbosity: verbosityRaw,
+		timeScope: timeScopeRaw,
+		entryIds: view.entries.map((entry) => entry.id),
+	});
+
 	return withSecurityHeaders(Response.json(view));
 }
 
@@ -215,7 +228,18 @@ async function handleQa(request: Request, env: Env): Promise<Response> {
 	if (!username) return withSecurityHeaders(unauthorizedResponse());
 	const result = await extractQuestion(request);
 	if ("error" in result) return result.error;
-	return withSecurityHeaders(Response.json(askQuestion(result.question)));
+
+	const response = askQuestion(result.question);
+	// Audit trail (#20): the query + which source was cited (or the not-found result) —
+	// never the synthesized answer text itself, which may one day carry sensitive
+	// record content the log must not retain.
+	await appendAuditEntry(env.NAV_CACHE, recipientIdentity(username), {
+		kind: "qa",
+		question: result.question,
+		citationIds: response.citations,
+		status: response.status,
+	});
+	return withSecurityHeaders(Response.json(response));
 }
 
 async function handleHealthz(request: Request, env: Env): Promise<Response> {
@@ -319,6 +343,8 @@ export default {
 		// no Cloudflare Access edge fronts this staging Worker yet.
 		if (url.pathname === "/admin/accounts") return withSecurityHeaders(await handleAdminCreateAccount(request, env));
 		if (url.pathname === "/admin/accounts/reset") return withSecurityHeaders(await handleAdminResetPassword(request, env));
+		// Read-only admin view of the access-audit log (#20).
+		if (url.pathname === "/admin/audit-log") return withSecurityHeaders(await handleAuditLogAdmin(request, env));
 
 		return withSecurityHeaders(new Response("not found", { status: 404 }));
 	},
