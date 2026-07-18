@@ -14,6 +14,8 @@ import {
 	unauthorizedResponse,
 } from "./auth/routes";
 import { isIpRequestAllowed } from "./auth/rateLimiter";
+import { MAX_JSON_BODY_BYTES, readBodyWithLimit } from "./http/bodyLimit";
+import { handleAdminDeleteReference, handleAdminReferences, handleAdminUpdateReference } from "./references/routes";
 
 // The atomic rate-limit / lockout Durable Object must be re-exported from the Worker
 // entrypoint so wrangler can bind it (durable_objects.bindings in wrangler.jsonc).
@@ -181,9 +183,14 @@ async function extractQuestion(request: Request): Promise<{ question: string } |
 		return { error: errorResponse(400, { error: "expected Content-Type: application/json", field: "content-type" }) };
 	}
 
+	const bodyResult = await readBodyWithLimit(request, MAX_JSON_BODY_BYTES);
+	if (!bodyResult.ok) {
+		return { error: errorResponse(413, { error: "request body too large" }) };
+	}
+
 	let parsed: unknown;
 	try {
-		parsed = await request.json();
+		parsed = JSON.parse(bodyResult.text);
 	} catch {
 		return { error: errorResponse(400, { error: "request body must be valid JSON" }) };
 	}
@@ -312,6 +319,15 @@ export default {
 		// no Cloudflare Access edge fronts this staging Worker yet.
 		if (url.pathname === "/admin/accounts") return withSecurityHeaders(await handleAdminCreateAccount(request, env));
 		if (url.pathname === "/admin/accounts/reset") return withSecurityHeaders(await handleAdminResetPassword(request, env));
+
+		// --- Operator-only trusted-reference curation (#19). Same operator-token gate
+		// as the account admin routes above — see src/auth/operatorAuth.ts. This is the
+		// only write path for the KV-backed curated-reference store; a reference-
+		// consistency check must always read it via src/references/guard.ts, never
+		// assemble its own reference list from an LLM/open-knowledge call.
+		if (url.pathname === "/admin/references") return withSecurityHeaders(await handleAdminReferences(request, env));
+		if (url.pathname === "/admin/references/update") return withSecurityHeaders(await handleAdminUpdateReference(request, env));
+		if (url.pathname === "/admin/references/delete") return withSecurityHeaders(await handleAdminDeleteReference(request, env));
 
 		return withSecurityHeaders(new Response("not found", { status: 404 }));
 	},

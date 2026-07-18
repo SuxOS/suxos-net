@@ -41,3 +41,15 @@ suxvault-access note above). Before starting any issue, check whether it names a
 `src/auth/`, `src/audit/`, or `src/access/` — if so, confirm with `git ls-tree -r main --name-only` that
 the file still doesn't exist before assuming this note is stale, then drop the issue as blocked rather
 than rebuilding the foundation from scratch or re-deriving this from first principles.
+
+### UPDATE 2026-07-18: PR #35 has since merged — `src/auth/*` foundation is live on `main`
+
+PR #35 landed on `main` as commit `aa66e05` (closes #18) — confirmed via `git log`/`git ls-tree -r main
+--name-only` while building #19/#63. `src/auth/{crypto,identity,rateLimiter,routes,session,store}.ts` and
+the auth wiring in `src/index.ts` now exist on `main` and on fresh `bot/issue-build-*` branches cut from
+it. The "#35 unmerged, don't build on it" guidance above is **stale for the `src/auth/*` foundation
+specifically** — #19 (trusted-reference curation) was buildable on top of it. `src/review.ts`,
+`src/audit/`, and `src/access/` are still absent as of this update, so `#5, #9, #10, #12, #13` and the
+`src/audit/`/`src/access/` half of `#20` remain stranded per the note above — always re-verify with
+`git ls-tree -r main --name-only` rather than trusting either this note or the one above at face value,
+since foundations merge over time and this file only gets corrected when a builder happens to notice.

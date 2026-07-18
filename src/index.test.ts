@@ -182,6 +182,27 @@ describe("POST /api/qa (requires a recipient session)", () => {
 		expect(res.status).toBe(405);
 		expect(res.headers.get("Allow")).toBe("POST");
 	});
+
+	it("returns 413 for an oversized body before ever JSON-parsing it (#63)", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		const oversizedQuestion = "x".repeat(64 * 1024);
+		const res = await call("/api/qa", {
+			method: "POST",
+			headers: { "content-type": "application/json", Cookie: cookie },
+			body: JSON.stringify({ question: oversizedQuestion }),
+		});
+		expect(res.status).toBe(413);
+	});
+
+	it("returns 413 for a declared Content-Length over the cap, even before the body is read", async () => {
+		const cookie = await createAccountAndLogin("alice", "correct horse battery staple");
+		const res = await call("/api/qa", {
+			method: "POST",
+			headers: { "content-type": "application/json", "content-length": String(64 * 1024), Cookie: cookie },
+			body: JSON.stringify({ question: "hi" }),
+		});
+		expect(res.status).toBe(413);
+	});
 });
 
 describe("GET /demo (frontend)", () => {
@@ -425,6 +446,11 @@ describe("recipient auth (#18)", () => {
 			expect(missingBody.error).toBe("invalid username or password");
 		});
 
+		it("returns 413 for an oversized login body before ever JSON-parsing it (#63)", async () => {
+			const res = await call("/login", jsonBody({ username: "x".repeat(64 * 1024), password: "whatever-password" }));
+			expect(res.status).toBe(413);
+		});
+
 		it("locks out after repeated failed attempts (rate limiting)", async () => {
 			await call("/admin/accounts", adminBody({ username: "erin", password: "correct-password-here" }));
 
@@ -559,6 +585,134 @@ describe("recipient auth (#18)", () => {
 				const res = await call(path, jsonBody({ username: "x", password: "y" }));
 				expect(res.status).toBe(404);
 			}
+		});
+	});
+});
+
+// Fictional demo persona / fixtures only — see #19 hard constraint: no real references.
+function fictionalReferenceInput(overrides: Partial<Record<string, unknown>> = {}) {
+	return {
+		fact: "Synthetic Compound Zeta is metabolized by the synthetic pathway.",
+		source: "SYNTHETIC-TEST Reference Manual, fictional edition",
+		sourceUrl: "https://example.invalid/synthetic-reference",
+		curator: "demo-curator",
+		scopeOfApplicability: "fictional demo persona only",
+		...overrides,
+	};
+}
+
+describe("trusted-reference curation (#19)", () => {
+	describe("POST /admin/references (operator-only creation)", () => {
+		it("creates a reference with a server-set id and dateAdded", async () => {
+			const res = await call("/admin/references", adminBody(fictionalReferenceInput()));
+			expect(res.status).toBe(201);
+			const body = (await res.json()) as { ok: boolean; reference: { id: string; dateAdded: string; curator: string } };
+			expect(body.ok).toBe(true);
+			expect(typeof body.reference.id).toBe("string");
+			expect(body.reference.id.length).toBeGreaterThan(0);
+			expect(new Date(body.reference.dateAdded).toString()).not.toBe("Invalid Date");
+			expect(body.reference.curator).toBe("demo-curator");
+		});
+
+		it("rejects creation with no operator token (401), and creates no reference", async () => {
+			const res = await call("/admin/references", jsonBody(fictionalReferenceInput()));
+			expect(res.status).toBe(401);
+			expect(res.headers.get("WWW-Authenticate")).toBe("Bearer");
+
+			const list = await call("/admin/references", { method: "GET", headers: { Authorization: `Bearer ${OPERATOR_TOKEN}` } });
+			const listBody = (await list.json()) as { references: unknown[] };
+			expect(listBody.references).toEqual([]);
+		});
+
+		it("fails closed when OPERATOR_TOKEN is unset", async () => {
+			const env: Env = { ...ENV, NAV_CACHE: createMemoryKv(), OPERATOR_TOKEN: "" };
+			const res = await worker.fetch(req("/admin/references", adminBody(fictionalReferenceInput())), env);
+			expect(res.status).toBe(401);
+		});
+
+		it("returns a structured 400 for a missing required field", async () => {
+			const res = await call("/admin/references", adminBody(fictionalReferenceInput({ fact: undefined })));
+			expect(res.status).toBe(400);
+			const body = (await res.json()) as { error: string; field?: string };
+			expect(body.field).toBe("fact");
+		});
+	});
+
+	describe("GET /admin/references (operator-only listing)", () => {
+		it("lists every curated reference", async () => {
+			await call("/admin/references", adminBody(fictionalReferenceInput({ fact: "Fact one." })));
+			await call("/admin/references", adminBody(fictionalReferenceInput({ fact: "Fact two." })));
+
+			const res = await call("/admin/references", { method: "GET", headers: { Authorization: `Bearer ${OPERATOR_TOKEN}` } });
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as { references: { fact: string }[] };
+			expect(body.references.map((r) => r.fact).sort()).toEqual(["Fact one.", "Fact two."]);
+		});
+
+		it("rejects listing with no operator token (401)", async () => {
+			const res = await call("/admin/references", { method: "GET" });
+			expect(res.status).toBe(401);
+		});
+	});
+
+	describe("POST /admin/references/update (operator-only edit)", () => {
+		it("edits an existing reference, leaving id and dateAdded unchanged", async () => {
+			const createRes = await call("/admin/references", adminBody(fictionalReferenceInput()));
+			const created = (await createRes.json()) as { reference: { id: string; dateAdded: string } };
+
+			const updateRes = await call(
+				"/admin/references/update",
+				adminBody({ id: created.reference.id, fact: "Updated synthetic fact." }),
+			);
+			expect(updateRes.status).toBe(200);
+			const updated = (await updateRes.json()) as { reference: { id: string; fact: string; dateAdded: string } };
+			expect(updated.reference.id).toBe(created.reference.id);
+			expect(updated.reference.fact).toBe("Updated synthetic fact.");
+			expect(updated.reference.dateAdded).toBe(created.reference.dateAdded);
+		});
+
+		it("returns 404 for updating a nonexistent reference", async () => {
+			const res = await call("/admin/references/update", adminBody({ id: "does-not-exist", fact: "x" }));
+			expect(res.status).toBe(404);
+		});
+
+		it("rejects an update with no operator token (401)", async () => {
+			const createRes = await call("/admin/references", adminBody(fictionalReferenceInput()));
+			const created = (await createRes.json()) as { reference: { id: string } };
+
+			const res = await call("/admin/references/update", jsonBody({ id: created.reference.id, fact: "attacker fact" }));
+			expect(res.status).toBe(401);
+		});
+	});
+
+	describe("POST /admin/references/delete (operator-only removal)", () => {
+		it("removes a curated reference", async () => {
+			const createRes = await call("/admin/references", adminBody(fictionalReferenceInput()));
+			const created = (await createRes.json()) as { reference: { id: string } };
+
+			const deleteRes = await call("/admin/references/delete", adminBody({ id: created.reference.id }));
+			expect(deleteRes.status).toBe(200);
+
+			const list = await call("/admin/references", { method: "GET", headers: { Authorization: `Bearer ${OPERATOR_TOKEN}` } });
+			const listBody = (await list.json()) as { references: unknown[] };
+			expect(listBody.references).toEqual([]);
+		});
+
+		it("returns 404 for deleting a nonexistent reference", async () => {
+			const res = await call("/admin/references/delete", adminBody({ id: "does-not-exist" }));
+			expect(res.status).toBe(404);
+		});
+
+		it("rejects a delete with no operator token (401), leaving the reference intact", async () => {
+			const createRes = await call("/admin/references", adminBody(fictionalReferenceInput()));
+			const created = (await createRes.json()) as { reference: { id: string } };
+
+			const res = await call("/admin/references/delete", jsonBody({ id: created.reference.id }));
+			expect(res.status).toBe(401);
+
+			const list = await call("/admin/references", { method: "GET", headers: { Authorization: `Bearer ${OPERATOR_TOKEN}` } });
+			const listBody = (await list.json()) as { references: unknown[] };
+			expect(listBody.references).toHaveLength(1);
 		});
 	});
 });

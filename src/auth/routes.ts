@@ -7,10 +7,12 @@
  * provisioning/reset is safe even on a bare `*.workers.dev` deployment.
  */
 
-import { timingSafeEqual, verifyPasswordConstantTime } from "./crypto";
+import { verifyPasswordConstantTime } from "./crypto";
 import { recipientIdentity } from "./identity";
+import { assertOperator } from "./operatorAuth";
 import { buildLogoutCookie, buildSessionCookie, createSessionToken, extractSessionToken, verifySessionToken } from "./session";
 import { admitLoginAttempt, clearFailedAttempts, createAccount, getAccount, resetPassword } from "./store";
+import { MAX_JSON_BODY_BYTES, readBodyWithLimit } from "../http/bodyLimit";
 
 export interface AuthEnv {
 	NAV_CACHE: KVNamespace;
@@ -43,9 +45,13 @@ async function parseJsonBody(request: Request): Promise<{ body: Record<string, u
 	if (!contentType.includes("application/json")) {
 		return { error: errorResponse(400, { error: "expected Content-Type: application/json", field: "content-type" }) };
 	}
+	const bodyResult = await readBodyWithLimit(request, MAX_JSON_BODY_BYTES);
+	if (!bodyResult.ok) {
+		return { error: errorResponse(413, { error: "request body too large" }) };
+	}
 	let parsed: unknown;
 	try {
-		parsed = await request.json();
+		parsed = JSON.parse(bodyResult.text);
 	} catch {
 		return { error: errorResponse(400, { error: "request body must be valid JSON" }) };
 	}
@@ -137,36 +143,6 @@ export async function requireSession(request: Request, env: AuthEnv): Promise<st
 
 export function unauthorizedResponse(): Response {
 	return errorResponse(401, { error: "authentication required" }, { "WWW-Authenticate": "Cookie" });
-}
-
-function operatorUnauthorizedResponse(): Response {
-	return errorResponse(401, { error: "operator authentication required" }, { "WWW-Authenticate": "Bearer" });
-}
-
-/** Extracts the token from an `Authorization: Bearer <token>` header, or null. */
-function extractBearerToken(request: Request): string | null {
-	const header = request.headers.get("Authorization");
-	if (!header) return null;
-	const match = /^Bearer (.+)$/.exec(header);
-	return match ? match[1] : null;
-}
-
-/**
- * Gate for operator-only /admin/* routes. Requires an `Authorization: Bearer` token
- * that constant-time-matches env.OPERATOR_TOKEN. Fails CLOSED when the token is unset
- * or missing — an unconfigured Worker rejects every admin request rather than exposing
- * account provisioning/reset. Both sides are SHA-256'd to fixed 32-byte digests before
- * comparison so timingSafeEqual never leaks token length. Returns a 401 Response to
- * short-circuit the handler, or null when the caller is a verified operator.
- */
-async function assertOperator(request: Request, env: AuthEnv): Promise<Response | null> {
-	const provided = extractBearerToken(request);
-	if (!env.OPERATOR_TOKEN || !provided) return operatorUnauthorizedResponse();
-	const encoder = new TextEncoder();
-	const providedDigest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(provided)));
-	const expectedDigest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(env.OPERATOR_TOKEN)));
-	if (!timingSafeEqual(providedDigest, expectedDigest)) return operatorUnauthorizedResponse();
-	return null;
 }
 
 /**
