@@ -69,6 +69,23 @@ describe("askDemoQuestion", () => {
 		expect(result.status).toBe("no_match");
 		expect(result.matches).toEqual([]);
 	});
+
+	it("defaults to format 'default' and leaves match text untouched", () => {
+		const result = askDemoQuestion("What happened with Fictoprazine dosage?");
+		expect(result.format).toBe("default");
+	});
+
+	it("haiku mode compacts match text to a single line without altering citations", () => {
+		const full = askDemoQuestion("What happened with Fictoprazine dosage?");
+		const haiku = askDemoQuestion("What happened with Fictoprazine dosage?", "haiku");
+		expect(haiku.format).toBe("haiku");
+		expect(haiku.matches.length).toBe(full.matches.length);
+		for (const [i, match] of haiku.matches.entries()) {
+			expect(match.citations).toEqual(full.matches[i].citations);
+			expect(match.text.length).toBeLessThanOrEqual(full.matches[i].text.length);
+			expect(match.text).not.toContain("\n");
+		}
+	});
 });
 
 describe("buildDemoFlagsView", () => {
@@ -195,6 +212,29 @@ describe("POST /demo/qa", () => {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("returns compacted, single-line match text with format:'haiku' set", async () => {
+		const res = await call("/demo/qa", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ question: "Tell me about the fictional wellness visit", format: "haiku" }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { format: string; matches: { text: string }[] };
+		expect(body.format).toBe("haiku");
+		for (const match of body.matches) {
+			expect(match.text).not.toContain("\n");
+		}
+	});
+
+	it("returns a structured 400 for an invalid format", async () => {
+		const res = await call("/demo/qa", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ question: "Tell me about the fictional wellness visit", format: "essay" }),
 		});
 		expect(res.status).toBe(400);
 	});
