@@ -279,6 +279,37 @@ describe("rate limiting on /api/*", () => {
 		}
 		expect(last?.status).toBe(200);
 	});
+
+	it("IP-rate-limits /login to blunt password spraying (429 after the window budget)", async () => {
+		const env = envWithFreshKv();
+		const ip = "3.3.3.3";
+		// Spray the SAME password across many distinct usernames — the per-username
+		// lockout never trips (one failed attempt each), so only the per-IP limiter
+		// stops this. Once the IP budget is exhausted, requests get a 429.
+		let last: Response | undefined;
+		for (let i = 0; i < 61; i++) {
+			last = await worker.fetch(
+				req("/login", { method: "POST", headers: { "content-type": "application/json", "CF-Connecting-IP": ip }, body: JSON.stringify({ username: `sprayed-${i}`, password: "one-guessed-password" }) }),
+				env,
+			);
+		}
+		expect(last?.status).toBe(429);
+		expect(last?.headers.get("Retry-After")).toBe("60");
+	});
+
+	it("IP-rate-limits /admin/* routes (429 after the window budget)", async () => {
+		const env = envWithFreshKv();
+		const ip = "4.4.4.4";
+		let last: Response | undefined;
+		for (let i = 0; i < 61; i++) {
+			last = await worker.fetch(
+				req("/admin/accounts", { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${OPERATOR_TOKEN}`, "CF-Connecting-IP": ip }, body: JSON.stringify({ username: `admin-flood-${i}`, password: "operator-set-password-1" }) }),
+				env,
+			);
+		}
+		expect(last?.status).toBe(429);
+		expect(last?.headers.get("Retry-After")).toBe("60");
+	});
 });
 
 describe("unknown routes", () => {

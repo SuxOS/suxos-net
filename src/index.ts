@@ -99,6 +99,16 @@ function clientIdentity(request: Request): string {
 	return request.headers.get("CF-Connecting-IP") ?? "unknown";
 }
 
+// Paths that pass through the per-IP rate limiter before dispatch. Covers the JSON
+// API (/api/*) plus the auth surface: /login (per-IP throttle on top of the
+// per-username lockout in auth/store.ts — the lockout alone can't stop password
+// spraying, where each username only ever accrues one failed attempt) and every
+// operator /admin/* route (account provisioning + reset). The operator bearer-token
+// gate still applies inside those handlers; this is an additive layer in front of it.
+function isRateLimitedPath(pathname: string): boolean {
+	return pathname.startsWith("/api/") || pathname === "/login" || pathname.startsWith("/admin/");
+}
+
 async function checkRateLimit(env: Env, identity: string): Promise<boolean> {
 	const windowBucket = Math.floor(Date.now() / (RATE_LIMIT_WINDOW_SECONDS * 1000));
 	const key = `ratelimit:v1:${identity}:${windowBucket}`;
@@ -269,7 +279,7 @@ export default {
 		assertStagingAccess(env);
 		const url = new URL(request.url);
 
-		if (url.pathname.startsWith("/api/") && !(await checkRateLimit(env, clientIdentity(request)))) {
+		if (isRateLimitedPath(url.pathname) && !(await checkRateLimit(env, clientIdentity(request)))) {
 			return rateLimitedResponse();
 		}
 
