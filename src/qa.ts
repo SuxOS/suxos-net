@@ -6,18 +6,34 @@
 // bibliography / citation graph) land in `sux` + `suxvault` (see FEATURE-IDEAS.md).
 // Until then this function must not fabricate an answer or a citation.
 
+import { toOneLine } from "./tools/verbositySummarizer";
+
+// "Haiku mode" (design doc §3): an opt-in compact response format, shared by
+// /api/qa and /demo/qa. Reformats the same cited text more tersely — it never
+// changes which citations are returned, so it carries no fabrication risk.
+export type QaFormat = "standard" | "haiku";
+
+export const QA_FORMAT_VALUES: readonly QaFormat[] = ["standard", "haiku"];
+
+export function isQaFormat(value: string): value is QaFormat {
+	return (QA_FORMAT_VALUES as readonly string[]).includes(value);
+}
+
 export interface QaResponse {
 	question: string;
 	answer: string;
 	citations: string[];
 	status: "not_implemented";
+	format: QaFormat;
 }
 
-export function askQuestion(question: string): QaResponse {
+export function askQuestion(question: string, format: QaFormat = "standard"): QaResponse {
+	const answer = "QA retrieval is not yet wired to the citation graph. This is a stub response.";
 	return {
 		question,
-		answer: "QA retrieval is not yet wired to the citation graph. This is a stub response.",
+		answer: format === "haiku" ? toOneLine(answer) : answer,
 		citations: [],
 		status: "not_implemented",
+		format,
 	};
 }

@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
-import worker, { type Env } from "../index";
+import worker, { RateLimitCounter, type Env } from "../index";
 import { buildDemoNavigatorView } from "./demoNavigator";
 import { askDemoQuestion } from "./demoQa";
 import { buildDemoFlagsView } from "./demoFlags";
 import { buildDemoHighlightsView } from "./demoHighlights";
 import { createInMemoryKv } from "../testUtils/kv";
+import { createInMemoryDurableObjectNamespace } from "../testUtils/durableObject";
 
 const ENV: Env = {
 	NAV_CACHE: createInMemoryKv(),
+	RATE_LIMITER: createInMemoryDurableObjectNamespace((state) => new RateLimitCounter(state)),
 	STAGING: "1",
 	ACCESS_STAGING_IDENTITY: "dev@localhost",
 };
@@ -64,6 +66,22 @@ describe("askDemoQuestion", () => {
 		const result = askDemoQuestion("zzz qqq xyzzy nonsense");
 		expect(result.status).toBe("no_match");
 		expect(result.matches).toEqual([]);
+	});
+
+	it("defaults to the standard format, unchanged match text", () => {
+		const result = askDemoQuestion("What happened with Fictoprazine dosage?");
+		expect(result.format).toBe("standard");
+	});
+
+	it("shortens match text to a single line in haiku format without dropping citations", () => {
+		const standard = askDemoQuestion("What happened with Fictoprazine dosage?", "standard");
+		const haiku = askDemoQuestion("What happened with Fictoprazine dosage?", "haiku");
+		expect(haiku.format).toBe("haiku");
+		expect(haiku.matches.length).toBe(standard.matches.length);
+		for (let i = 0; i < haiku.matches.length; i++) {
+			expect(haiku.matches[i].text.includes("\n")).toBe(false);
+			expect(haiku.matches[i].citations).toEqual(standard.matches[i].citations);
+		}
 	});
 });
 
@@ -193,6 +211,29 @@ describe("POST /demo/qa", () => {
 			body: JSON.stringify({}),
 		});
 		expect(res.status).toBe(400);
+	});
+
+	it("returns 200 with format: haiku and single-line match text under ?format=haiku", async () => {
+		const res = await call("/demo/qa?format=haiku", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ question: "Tell me about the fictional wellness visit" }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { format: string; matches: { text: string }[] };
+		expect(body.format).toBe("haiku");
+		for (const match of body.matches) expect(match.text.includes("\n")).toBe(false);
+	});
+
+	it("returns a structured 400 for an invalid format", async () => {
+		const res = await call("/demo/qa?format=essay", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ question: "Tell me about the fictional wellness visit" }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("format");
 	});
 });
 

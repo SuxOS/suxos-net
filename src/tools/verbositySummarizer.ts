@@ -30,8 +30,11 @@ const ONELINE_MAX_LENGTH = 140;
  * sentence if one is found within the length budget, otherwise a hard truncation
  * with an ellipsis. This is a display transform only — it never drops information
  * that changes the substance of the claim, just the amount of it shown at once.
+ *
+ * Exported so any other "render this cited text more compactly" surface (e.g. QA's
+ * haiku/compact response format) reuses this truncation instead of re-deriving it.
  */
-function toOneLine(text: string): string {
+export function toOneLine(text: string): string {
 	const collapsed = text.replace(/\s+/g, " ").trim();
 	if (collapsed.length === 0) return "";
 

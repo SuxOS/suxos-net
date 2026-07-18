@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-import worker, { type Env } from "./index";
+import worker, { RateLimitCounter, type Env } from "./index";
 import { createInMemoryKv } from "./testUtils/kv";
+import { createInMemoryDurableObjectNamespace } from "./testUtils/durableObject";
 
 const ENV: Env = {
 	NAV_CACHE: createInMemoryKv(),
+	RATE_LIMITER: createInMemoryDurableObjectNamespace((state) => new RateLimitCounter(state)),
 	STAGING: "1",
 	ACCESS_STAGING_IDENTITY: "dev@localhost",
 };
@@ -117,6 +119,35 @@ describe("POST /api/qa", () => {
 		expect(res.status).toBe(405);
 		expect(res.headers.get("Allow")).toBe("POST");
 	});
+
+	it("returns format: standard by default and format: haiku under ?format=haiku", async () => {
+		const standardRes = await call("/api/qa", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ question: "What happened in March?" }),
+		});
+		const standardBody = (await standardRes.json()) as { format: string };
+		expect(standardBody.format).toBe("standard");
+
+		const haikuRes = await call("/api/qa?format=haiku", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ question: "What happened in March?" }),
+		});
+		const haikuBody = (await haikuRes.json()) as { format: string };
+		expect(haikuBody.format).toBe("haiku");
+	});
+
+	it("returns a structured 400 for an invalid format", async () => {
+		const res = await call("/api/qa?format=essay", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ question: "What happened in March?" }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string; field?: string };
+		expect(body.field).toBe("format");
+	});
 });
 
 describe("GET /demo (frontend)", () => {
@@ -170,18 +201,22 @@ describe("GET /demo (frontend)", () => {
 });
 
 describe("rate limiting on /api/*", () => {
-	function envWithFreshKv(): Env {
-		return { ...ENV, NAV_CACHE: createInMemoryKv() };
+	function freshRateLimitEnv(): Env {
+		return {
+			...ENV,
+			NAV_CACHE: createInMemoryKv(),
+			RATE_LIMITER: createInMemoryDurableObjectNamespace((state) => new RateLimitCounter(state)),
+		};
 	}
 
 	it("allows requests under the limit", async () => {
-		const env = envWithFreshKv();
+		const env = freshRateLimitEnv();
 		const res = await worker.fetch(req("/api/navigator", { headers: { "CF-Connecting-IP": "1.2.3.4" } }), env);
 		expect(res.status).toBe(200);
 	});
 
 	it("returns 429 with Retry-After once a client exceeds the window limit", async () => {
-		const env = envWithFreshKv();
+		const env = freshRateLimitEnv();
 		const ip = "5.6.7.8";
 		let last: Response | undefined;
 		for (let i = 0; i < 61; i++) {
@@ -192,7 +227,7 @@ describe("rate limiting on /api/*", () => {
 	});
 
 	it("tracks limits per client independently", async () => {
-		const env = envWithFreshKv();
+		const env = freshRateLimitEnv();
 		for (let i = 0; i < 60; i++) {
 			await worker.fetch(req("/api/navigator", { headers: { "CF-Connecting-IP": "9.9.9.9" } }), env);
 		}
@@ -201,12 +236,22 @@ describe("rate limiting on /api/*", () => {
 	});
 
 	it("does not rate-limit non-/api/ routes", async () => {
-		const env = envWithFreshKv();
+		const env = freshRateLimitEnv();
 		let last: Response | undefined;
 		for (let i = 0; i < 65; i++) {
 			last = await worker.fetch(req("/healthz", { headers: { "CF-Connecting-IP": "2.2.2.2" } }), env);
 		}
 		expect(last?.status).toBe(200);
+	});
+
+	it("never allows more than the max requests through, even when issued concurrently", async () => {
+		const env = freshRateLimitEnv();
+		const ip = "3.3.3.3";
+		const responses = await Promise.all(
+			Array.from({ length: 70 }, () => worker.fetch(req("/api/navigator", { headers: { "CF-Connecting-IP": ip } }), env)),
+		);
+		const allowed = responses.filter((r) => r.status === 200).length;
+		expect(allowed).toBe(60);
 	});
 });
 

@@ -4,6 +4,8 @@
 // no fabrication is possible here, only "here's what matched, with its citations."
 
 import { demoClaims, demoRecords } from "./demoData";
+import { type QaFormat } from "../qa";
+import { toOneLine } from "../tools/verbositySummarizer";
 
 export interface DemoQaMatch {
 	id: string;
@@ -17,6 +19,7 @@ export interface DemoQaResponse {
 	matches: DemoQaMatch[];
 	status: "matched" | "no_match";
 	notice: string;
+	format: QaFormat;
 }
 
 const NOTICE = "FICTIONAL DEMO DATA — not the user's real information. Do not treat as real.";
@@ -40,7 +43,7 @@ function keywordsOf(text: string): string[] {
  * answer or a citation, it only surfaces records/claims whose text shares keywords
  * with the question, ranked by overlap count.
  */
-export function askDemoQuestion(question: string): DemoQaResponse {
+export function askDemoQuestion(question: string, format: QaFormat = "standard"): DemoQaResponse {
 	const questionKeywords = new Set(keywordsOf(question));
 
 	const candidates: DemoQaMatch[] = [
@@ -56,12 +59,13 @@ export function askDemoQuestion(question: string): DemoQaResponse {
 		.filter(({ overlap }) => overlap > 0)
 		.sort((a, b) => b.overlap - a.overlap)
 		.slice(0, 5)
-		.map(({ candidate }) => candidate);
+		.map(({ candidate }) => (format === "haiku" ? { ...candidate, text: toOneLine(candidate.text) } : candidate));
 
 	return {
 		question,
 		matches: scored,
 		status: scored.length > 0 ? "matched" : "no_match",
 		notice: NOTICE,
+		format,
 	};
 }

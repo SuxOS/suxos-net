@@ -1,13 +1,20 @@
-import { askQuestion } from "./qa";
+import { askQuestion, isQaFormat, QA_FORMAT_VALUES, type QaFormat } from "./qa";
 import { getNavigatorView, isTimeScope, isVerbosity, TIME_SCOPE_VALUES, VERBOSITY_VALUES } from "./navigator";
 import { buildDemoNavigatorView } from "./demo/demoNavigator";
 import { askDemoQuestion } from "./demo/demoQa";
 import { buildDemoFlagsView } from "./demo/demoFlags";
 import { buildDemoHighlightsView } from "./demo/demoHighlights";
 import { DEMO_CSS, DEMO_HTML, DEMO_JS } from "./frontend/demoFrontend";
+import { RateLimitCounter } from "./durableObjects/rateLimitCounter";
+
+// Re-exported so wrangler.jsonc's durable_objects binding (class_name: "RateLimitCounter")
+// can resolve it from this Worker's entry point, per Cloudflare's requirement that a DO
+// class be exported from the `main` module.
+export { RateLimitCounter };
 
 export interface Env {
 	NAV_CACHE: KVNamespace;
+	RATE_LIMITER: DurableObjectNamespace;
 	STAGING: string;
 	ACCESS_STAGING_IDENTITY: string;
 }
@@ -75,9 +82,10 @@ function methodNotAllowed(allow: string): Response {
 }
 
 // Basic per-client rate limiting (issue #28 audit finding: "none exists currently").
-// Best-effort fixed-window counter in NAV_CACHE — KV has no atomic increment, so under
-// real concurrency this can undercount, but for a staging Worker with no real traffic
-// yet this is a cheap deterrent against the obvious abuse case, not a hard guarantee.
+// Fixed-window counter backed by the RATE_LIMITER Durable Object (issue #55) — one DO
+// instance per client identity, and a DO serializes every call it receives, so the
+// increment-and-check in RateLimitCounter.fetch is a real atomic guarantee, unlike the
+// plain KV get-then-put this replaced.
 const RATE_LIMIT_WINDOW_SECONDS = 60;
 const RATE_LIMIT_MAX_REQUESTS = 60;
 
@@ -87,11 +95,14 @@ function clientIdentity(request: Request): string {
 
 async function checkRateLimit(env: Env, identity: string): Promise<boolean> {
 	const windowBucket = Math.floor(Date.now() / (RATE_LIMIT_WINDOW_SECONDS * 1000));
-	const key = `ratelimit:v1:${identity}:${windowBucket}`;
-	const current = Number(await env.NAV_CACHE.get(key)) || 0;
-	if (current >= RATE_LIMIT_MAX_REQUESTS) return false;
-	await env.NAV_CACHE.put(key, String(current + 1), { expirationTtl: RATE_LIMIT_WINDOW_SECONDS });
-	return true;
+	const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName(identity));
+	const response = await stub.fetch("https://rate-limit-counter/check", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ windowBucket, max: RATE_LIMIT_MAX_REQUESTS }),
+	});
+	const result = (await response.json()) as { allowed: boolean };
+	return result.allowed;
 }
 
 function rateLimitedResponse(): Response {
@@ -170,11 +181,30 @@ async function extractQuestion(request: Request): Promise<{ question: string } |
 	return { question };
 }
 
+/**
+ * Shared `?format=` parsing for the two QA routes ("haiku mode", design doc §3):
+ * defaults to "standard" when absent, 400s on anything not in QA_FORMAT_VALUES.
+ */
+function extractQaFormat(request: Request): { format: QaFormat } | { error: Response } {
+	const formatRaw = new URL(request.url).searchParams.get("format") ?? "standard";
+	if (!isQaFormat(formatRaw)) {
+		return {
+			error: errorResponse(400, {
+				error: `invalid format; expected one of ${QA_FORMAT_VALUES.join(", ")}`,
+				field: "format",
+			}),
+		};
+	}
+	return { format: formatRaw };
+}
+
 async function handleQa(request: Request): Promise<Response> {
 	if (request.method !== "POST") return methodNotAllowed("POST");
+	const formatResult = extractQaFormat(request);
+	if ("error" in formatResult) return formatResult.error;
 	const result = await extractQuestion(request);
 	if ("error" in result) return result.error;
-	return withSecurityHeaders(Response.json(askQuestion(result.question)));
+	return withSecurityHeaders(Response.json(askQuestion(result.question, formatResult.format)));
 }
 
 async function handleHealthz(request: Request, env: Env): Promise<Response> {
@@ -211,9 +241,11 @@ async function handleDemoNavigator(request: Request): Promise<Response> {
 
 async function handleDemoQa(request: Request): Promise<Response> {
 	if (request.method !== "POST") return methodNotAllowed("POST");
+	const formatResult = extractQaFormat(request);
+	if ("error" in formatResult) return formatResult.error;
 	const result = await extractQuestion(request);
 	if ("error" in result) return result.error;
-	return withSecurityHeaders(Response.json(askDemoQuestion(result.question)));
+	return withSecurityHeaders(Response.json(askDemoQuestion(result.question, formatResult.format)));
 }
 
 async function handleDemoFlags(request: Request): Promise<Response> {
