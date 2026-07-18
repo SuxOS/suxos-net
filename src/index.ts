@@ -13,9 +13,18 @@ import {
 	requireSession,
 	unauthorizedResponse,
 } from "./auth/routes";
+import { isIpRequestAllowed } from "./auth/rateLimiter";
+
+// The atomic rate-limit / lockout Durable Object must be re-exported from the Worker
+// entrypoint so wrangler can bind it (durable_objects.bindings in wrangler.jsonc).
+export { RateLimiterDO } from "./auth/rateLimiter";
 
 export interface Env {
 	NAV_CACHE: KVNamespace;
+	// Atomic per-IP and per-username counters (#35). KV has no atomic increment, so
+	// both rate limiters live in this serialised Durable Object namespace — see
+	// src/auth/rateLimiter.ts. Closes the two TOCTOU HIGHs on #35.
+	RATE_LIMITER: DurableObjectNamespace;
 	STAGING: string;
 	ACCESS_STAGING_IDENTITY: string;
 	// HMAC signing secret for recipient session cookies (#18). Set via
@@ -88,10 +97,12 @@ function methodNotAllowed(allow: string): Response {
 	return errorResponse(405, { error: `method not allowed, expected ${allow}` }, { Allow: allow });
 }
 
-// Basic per-client rate limiting (issue #28 audit finding: "none exists currently").
-// Best-effort fixed-window counter in NAV_CACHE — KV has no atomic increment, so under
-// real concurrency this can undercount, but for a staging Worker with no real traffic
-// yet this is a cheap deterrent against the obvious abuse case, not a hard guarantee.
+// Per-client rate limiting (issue #28 audit finding: "none exists currently").
+// Fixed-window counter in the RateLimiterDO Durable Object — NOT KV. KV has no atomic
+// increment, so the old get-then-put here was a TOCTOU race: a burst of concurrent
+// requests could all read the same pre-increment count and pass together, blowing past
+// the budget (security-review HIGH on #35). The DO serialises increment-and-check per
+// IP, so the 60/60s budget is now a hard guarantee, not a best-effort deterrent.
 const RATE_LIMIT_WINDOW_SECONDS = 60;
 const RATE_LIMIT_MAX_REQUESTS = 60;
 
@@ -110,12 +121,7 @@ function isRateLimitedPath(pathname: string): boolean {
 }
 
 async function checkRateLimit(env: Env, identity: string): Promise<boolean> {
-	const windowBucket = Math.floor(Date.now() / (RATE_LIMIT_WINDOW_SECONDS * 1000));
-	const key = `ratelimit:v1:${identity}:${windowBucket}`;
-	const current = Number(await env.NAV_CACHE.get(key)) || 0;
-	if (current >= RATE_LIMIT_MAX_REQUESTS) return false;
-	await env.NAV_CACHE.put(key, String(current + 1), { expirationTtl: RATE_LIMIT_WINDOW_SECONDS });
-	return true;
+	return isIpRequestAllowed(env.RATE_LIMITER, identity, RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECONDS * 1000);
 }
 
 function rateLimitedResponse(): Response {

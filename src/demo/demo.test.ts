@@ -5,9 +5,11 @@ import { askDemoQuestion } from "./demoQa";
 import { buildDemoFlagsView } from "./demoFlags";
 import { buildDemoHighlightsView } from "./demoHighlights";
 import { createInMemoryKv } from "../testUtils/kv";
+import { createRateLimiterNamespace } from "../test/doMock";
 
 const ENV: Env = {
 	NAV_CACHE: createInMemoryKv(),
+	RATE_LIMITER: createRateLimiterNamespace(),
 	STAGING: "1",
 	ACCESS_STAGING_IDENTITY: "dev@localhost",
 	SESSION_SECRET: "test-session-secret-do-not-use-in-prod",

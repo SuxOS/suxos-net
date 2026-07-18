@@ -14,6 +14,10 @@ import { checkLockout, clearFailedAttempts, createAccount, getAccount, recordFai
 
 export interface AuthEnv {
 	NAV_CACHE: KVNamespace;
+	// Durable Object namespace backing the atomic per-username login lockout counter
+	// (#35). KV has no atomic increment, so the lockout lives in a serialised DO —
+	// see src/auth/rateLimiter.ts and src/auth/store.ts.
+	RATE_LIMITER: DurableObjectNamespace;
 	SESSION_SECRET: string;
 	// Shared secret for operator-only /admin/* routes. Set via
 	// `wrangler secret put OPERATOR_TOKEN` — never a `vars` entry, never committed.
@@ -72,7 +76,7 @@ export async function handleLogin(request: Request, env: AuthEnv): Promise<Respo
 	if ("error" in parsed) return parsed.error;
 	const { username, password } = parsed;
 
-	const lockout = await checkLockout(env.NAV_CACHE, username);
+	const lockout = await checkLockout(env.RATE_LIMITER, username);
 	if (lockout.locked) {
 		const retryAfterSeconds = Math.ceil((lockout.retryAfterMs ?? 0) / 1000);
 		return errorResponse(429, { error: "too many failed login attempts; try again later" }, {
@@ -91,11 +95,11 @@ export async function handleLogin(request: Request, env: AuthEnv): Promise<Respo
 	// the "wrong password" path, closing the username-enumeration timing side-channel.
 	const valid = await verifyPasswordConstantTime(password, account?.passwordHash ?? null);
 	if (!account || !valid) {
-		await recordFailedAttempt(env.NAV_CACHE, username);
+		await recordFailedAttempt(env.RATE_LIMITER, username);
 		return genericFailure();
 	}
 
-	await clearFailedAttempts(env.NAV_CACHE, username);
+	await clearFailedAttempts(env.RATE_LIMITER, username);
 	const token = await createSessionToken(account.username, env.SESSION_SECRET);
 	return jsonResponse(
 		200,

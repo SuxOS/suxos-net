@@ -13,9 +13,9 @@
  */
 
 import { hashPassword, type PasswordHash } from "./crypto";
+import { clearLockout, getLockoutStatus, recordLockoutFailure, type LockoutStatus } from "./rateLimiter";
 
 const ACCOUNT_KEY_PREFIX = "auth:account:";
-const LOCKOUT_KEY_PREFIX = "auth:lockout:";
 
 export interface Account {
 	username: string;
@@ -74,55 +74,32 @@ export async function resetPassword(kv: KVNamespace, username: string, newPasswo
 }
 
 // --- Login rate limiting / lockout (also closes the general "no rate limiting on
-// login" gap flagged in the org security audit) ---
+// login" gap flagged in the org security audit).
+//
+// The per-username lockout counter lives in the RateLimiterDO Durable Object
+// (src/auth/rateLimiter.ts), NOT KV. KV has no atomic increment, so the previous
+// get-then-put here was a TOCTOU race: concurrent failed logins could all read the
+// same pre-increment count and never trip the 5-attempt threshold (security-review
+// HIGH on #35). Routing through the DO makes increment-and-check atomic — the budget
+// (5 attempts / 15 min) and the lock-from-tripping-attempt semantics are unchanged;
+// only the store backing them moved from KV to the serialised DO. Accounts stay in
+// KV (no atomicity requirement — one operator-only writer). ---
 
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_WINDOW_MS = 15 * 60 * 1000;
 
-interface LockoutState {
-	failedAttempts: number;
-	windowStartedAt: number;
-	lockedUntil?: number;
+export type { LockoutStatus };
+
+export async function checkLockout(rateLimiter: DurableObjectNamespace, username: string): Promise<LockoutStatus> {
+	return getLockoutStatus(rateLimiter, username);
 }
 
-function lockoutKey(username: string): string {
-	return LOCKOUT_KEY_PREFIX + username.trim().toLowerCase();
+export async function recordFailedAttempt(rateLimiter: DurableObjectNamespace, username: string): Promise<void> {
+	await recordLockoutFailure(rateLimiter, username, MAX_FAILED_ATTEMPTS, LOCKOUT_WINDOW_MS);
 }
 
-export interface LockoutStatus {
-	locked: boolean;
-	retryAfterMs?: number;
-}
-
-export async function checkLockout(kv: KVNamespace, username: string, now: number = Date.now()): Promise<LockoutStatus> {
-	const raw = await kv.get(lockoutKey(username));
-	if (!raw) return { locked: false };
-	const state = JSON.parse(raw) as LockoutState;
-	if (state.lockedUntil && now < state.lockedUntil) {
-		return { locked: true, retryAfterMs: state.lockedUntil - now };
-	}
-	return { locked: false };
-}
-
-export async function recordFailedAttempt(kv: KVNamespace, username: string, now: number = Date.now()): Promise<void> {
-	const key = lockoutKey(username);
-	const raw = await kv.get(key);
-	let state: LockoutState = raw ? (JSON.parse(raw) as LockoutState) : { failedAttempts: 0, windowStartedAt: now };
-
-	if (now - state.windowStartedAt > LOCKOUT_WINDOW_MS) {
-		state = { failedAttempts: 0, windowStartedAt: now };
-	}
-
-	state.failedAttempts += 1;
-	if (state.failedAttempts >= MAX_FAILED_ATTEMPTS) {
-		state.lockedUntil = now + LOCKOUT_WINDOW_MS;
-	}
-
-	await kv.put(key, JSON.stringify(state));
-}
-
-export async function clearFailedAttempts(kv: KVNamespace, username: string): Promise<void> {
-	await kv.delete(lockoutKey(username));
+export async function clearFailedAttempts(rateLimiter: DurableObjectNamespace, username: string): Promise<void> {
+	await clearLockout(rateLimiter, username);
 }
 
 export const AUTH_LOCKOUT_CONSTANTS = { MAX_FAILED_ATTEMPTS, LOCKOUT_WINDOW_MS };

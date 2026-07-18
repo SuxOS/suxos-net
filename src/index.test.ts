@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "./index";
 import { createMemoryKv } from "./test/kvMock";
+import { createRateLimiterNamespace } from "./test/doMock";
 
 let ENV: Env;
 
@@ -9,6 +10,7 @@ const OPERATOR_TOKEN = "test-operator-token-do-not-use-in-prod";
 beforeEach(() => {
 	ENV = {
 		NAV_CACHE: createMemoryKv(),
+		RATE_LIMITER: createRateLimiterNamespace(),
 		STAGING: "1",
 		ACCESS_STAGING_IDENTITY: "dev@localhost",
 		SESSION_SECRET: "test-session-secret-do-not-use-in-prod",
@@ -234,7 +236,9 @@ describe("GET /demo (frontend)", () => {
 
 describe("rate limiting on /api/*", () => {
 	function envWithFreshKv(): Env {
-		return { ...ENV, NAV_CACHE: createMemoryKv() };
+		// Fresh DO namespace too — the accumulation tests below depend on starting from
+		// an empty per-IP counter, exactly as they depend on a fresh KV.
+		return { ...ENV, NAV_CACHE: createMemoryKv(), RATE_LIMITER: createRateLimiterNamespace() };
 	}
 
 	// The limiter uses a fixed-window counter keyed on Math.floor(Date.now() / window)
