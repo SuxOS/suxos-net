@@ -18,6 +18,13 @@ import { isIpRequestAllowed } from "./auth/rateLimiter";
 import { recipientIdentity } from "./auth/identity";
 import { appendAuditEntry } from "./audit/log";
 import { handleAuditLogAdmin } from "./audit/routes";
+import { readJsonBodyWithLimit } from "./httpBody";
+import {
+	handleCreateReference,
+	handleDeleteReference,
+	handleListReferences,
+	handleUpdateReference,
+} from "./references/routes";
 
 // The atomic rate-limit / lockout Durable Object must be re-exported from the Worker
 // entrypoint so wrangler can bind it (durable_objects.bindings in wrangler.jsonc).
@@ -207,12 +214,14 @@ async function extractQuestion(request: Request): Promise<{ question: string; fo
 		return { error: errorResponse(400, { error: "expected Content-Type: application/json", field: "content-type" }) };
 	}
 
-	let parsed: unknown;
-	try {
-		parsed = await request.json();
-	} catch {
+	const bodyResult = await readJsonBodyWithLimit(request);
+	if (!bodyResult.ok) {
+		if (bodyResult.kind === "too-large") {
+			return { error: errorResponse(413, { error: `request body exceeds ${bodyResult.maxBytes} byte limit` }) };
+		}
 		return { error: errorResponse(400, { error: "request body must be valid JSON" }) };
 	}
+	const parsed = bodyResult.parsed;
 
 	if (typeof parsed !== "object" || parsed === null) {
 		return { error: errorResponse(400, { error: "request body must be a JSON object" }) };
@@ -359,6 +368,19 @@ export default {
 		if (url.pathname === "/admin/accounts/reset") return withSecurityHeaders(await handleAdminResetPassword(request, env));
 		// Read-only admin view of the access-audit log (#20).
 		if (url.pathname === "/admin/audit-log") return withSecurityHeaders(await handleAuditLogAdmin(request, env));
+
+		// --- Trusted-reference curation (#19): operator-only CRUD over the curated
+		// store. This is the ONLY way a trusted reference is ever added — see
+		// src/references/store.ts and the runtime guard in src/review.ts, which reads
+		// exclusively from this store and never accepts a reference via /api/review's
+		// request body.
+		if (url.pathname === "/admin/references") {
+			if (request.method === "GET") return withSecurityHeaders(await handleListReferences(request, env));
+			if (request.method === "POST") return withSecurityHeaders(await handleCreateReference(request, env));
+			return withSecurityHeaders(methodNotAllowed("GET, POST"));
+		}
+		if (url.pathname === "/admin/references/update") return withSecurityHeaders(await handleUpdateReference(request, env));
+		if (url.pathname === "/admin/references/delete") return withSecurityHeaders(await handleDeleteReference(request, env));
 
 		return withSecurityHeaders(new Response("not found", { status: 404 }));
 	},

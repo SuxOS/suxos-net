@@ -105,6 +105,7 @@ fabricated answer or citation.
 - `400 { "error": "...", "field": "content-type" }` — missing/wrong `Content-Type`.
 - `400 { "error": "request body must be valid JSON" }` — malformed JSON body.
 - `400 { "error": "request body must be a JSON object" }` — body isn't a JSON object.
+- `413 { "error": "..." }` — body exceeds the pre-parse byte-size limit (#63).
 - `400 { "error": "...", "field": "question" }` — `question` missing, non-string, or
   empty/whitespace-only.
 - `405` with `Allow: POST` — any method other than `POST`.
@@ -118,9 +119,13 @@ take the user's word for it") — runs all four review tools (`findInconsistenci
 `findGroundingSignals`, `flagAgainstReferences`, `checkCitationIntegrity`) over a
 caller-submitted batch of claims and returns every hedged flag/signal/report together,
 the same shape `GET /demo/flags` returns over the fictional demo dataset. suxvault
-holds no real content yet, so the caller submits the claims (and, optionally, a small
-curated set of trusted references) directly in the request body rather than this route
-pulling them from a record itself.
+holds no real content yet, so the caller submits the claims directly in the request
+body rather than this route pulling them from a record itself.
+
+Trusted references are **not** part of the request body (#19 runtime guard): this
+route sources `TrustedReference[]` exclusively from the curated store
+(`src/references/store.ts`, managed via the operator-only `/admin/references*` routes),
+never from caller input — see "Trusted-reference curation" below.
 
 **Requires a recipient session** (same `requireSession` cookie check as
 `GET /api/navigator`/`POST /api/qa`).
@@ -133,9 +138,6 @@ pulling them from a record itself.
 {
   "claims": [
     { "id": "claim-a", "text": "...", "citations": ["claim-b"], "confidence": 0.8 }
-  ],
-  "references": [
-    { "id": "ref-001", "text": "...", "source": "...", "sourceUrl": "https://..." }
   ]
 }
 ```
@@ -143,34 +145,55 @@ pulling them from a record itself.
 `claims` is required: a non-empty array of at most 200 entries. Each claim needs a
 non-empty `id` (≤200 chars), a non-empty `text` (≤4000 chars), and a `citations` array
 of at most 50 string entries (each ≤200 chars); `confidence`, if present, must be a
-number between 0 and 1. `references` is optional: an array of at most 200 entries,
-each needing a non-empty `id` (≤200 chars), non-empty `text` (≤4000 chars), and
-non-empty `source` (≤500 chars); `sourceUrl`, if present, is a non-empty string
-(≤500 chars). These caps bound the O(n²)/O(claims×references) cost of the pairwise
-checks below to a fixed worst case per request, regardless of caller input.
+number between 0 and 1. These caps bound the O(n²)/O(claims×references) cost of the
+pairwise checks below to a fixed worst case per request, regardless of caller input. A
+`references` key present in the body is rejected outright (see errors below) rather
+than silently ignored.
 
 **200 response:** same shape as `GET /demo/flags`'s 200 response (`selfConsistency`,
 `groundingSignals`, `referenceConsistency`, `citationIntegrity`), computed over the
-submitted `claims`/`references` instead of the fictional demo dataset, and with no
-`notice` field (this is real caller-submitted input, not demo data). For
-`citationIntegrity`, a citation is only "known" if it names another claim's `id` or a
-submitted reference's `id` in the same request — not an open-ended external set.
+submitted `claims` and the curated reference store instead of the fictional demo
+dataset, and with no `notice` field (this is real caller-submitted input, not demo
+data). For `citationIntegrity`, a citation is only "known" if it names another claim's
+`id` in the same request or a curated reference's `id` — not an open-ended external set.
 
 **Errors:**
 
 - `400 { "error": "...", "field": "content-type" }` — missing/wrong `Content-Type`.
 - `400 { "error": "request body must be valid JSON" }` — malformed JSON body.
 - `400 { "error": "request body must be a JSON object" }` — body isn't a JSON object.
+- `413 { "error": "..." }` — body exceeds the pre-parse byte-size limit (#63).
 - `400 { "error": "...", "field": "claims" }` — `claims` missing, not an array, empty,
   or over 200 entries.
 - `400 { "error": "...", "field": "claims[i].id" | "claims[i].text" | "claims[i].citations" | "claims[i].confidence" }`
   — a specific claim failed validation.
-- `400 { "error": "...", "field": "references" }` — `references` present but not an
-  array, or over 200 entries.
-- `400 { "error": "...", "field": "references[i].id" | "references[i].text" | "references[i].source" | "references[i].sourceUrl" }`
-  — a specific reference failed validation.
+- `400 { "error": "references are sourced from the curated store and cannot be supplied in the request body", "field": "references" }`
+  — the body included a `references` key at all (#19 runtime guard).
 - `401 { "error": "authentication required" }` — no valid recipient session.
 - `405` with `Allow: POST` — any method other than `POST`.
+
+---
+
+## Trusted-reference curation (`/admin/references*`, operator-only)
+
+Human-curated trusted references (drug interactions, legal standards, etc.) that
+`POST /api/review`'s reference-consistency check reads from — see design doc §6 and
+`src/references/store.ts`. This is the *only* way a trusted reference is ever added,
+edited, or removed; there is no runtime path (LLM call or otherwise) that can add one.
+Same operator bearer-token gate as `/admin/accounts`/`/admin/audit-log`
+(`Authorization: Bearer <OPERATOR_TOKEN>`).
+
+- `GET /admin/references` — lists every curated reference (`{ references: [...],
+  cursor }`).
+- `POST /admin/references` — creates one: `{ id, text, source, sourceUrl?, curator,
+  scopeOfApplicability }`. `dateAdded` is stamped server-side, never caller-supplied.
+  `409` on a duplicate `id`.
+- `POST /admin/references/update` — `{ id, ...fields to change }`; `dateAdded` is never
+  modified. `404` if `id` does not exist.
+- `POST /admin/references/delete` — `{ id }`. `404` if `id` does not exist.
+
+No real references are seeded anywhere in this repo (hard constraint, #19) — only
+fictional demo fixtures in tests, until a human curator adds real ones.
 
 ---
 
