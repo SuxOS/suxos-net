@@ -8,9 +8,10 @@ let ENV: Env;
 const OPERATOR_TOKEN = "test-operator-token-do-not-use-in-prod";
 
 beforeEach(() => {
+	const navCache = createMemoryKv();
 	ENV = {
-		NAV_CACHE: createMemoryKv(),
-		RATE_LIMITER: createRateLimiterNamespace(),
+		NAV_CACHE: navCache,
+		RATE_LIMITER: createRateLimiterNamespace(navCache),
 		STAGING: "1",
 		ACCESS_STAGING_IDENTITY: "dev@localhost",
 		SESSION_SECRET: "test-session-secret-do-not-use-in-prod",
@@ -385,7 +386,8 @@ describe("rate limiting on /api/*", () => {
 	function envWithFreshKv(): Env {
 		// Fresh DO namespace too — the accumulation tests below depend on starting from
 		// an empty per-IP counter, exactly as they depend on a fresh KV.
-		return { ...ENV, NAV_CACHE: createMemoryKv(), RATE_LIMITER: createRateLimiterNamespace() };
+		const navCache = createMemoryKv();
+		return { ...ENV, NAV_CACHE: navCache, RATE_LIMITER: createRateLimiterNamespace(navCache) };
 	}
 
 	// The limiter uses a fixed-window counter keyed on Math.floor(Date.now() / window)
@@ -841,6 +843,92 @@ describe("recipient auth (#18)", () => {
 			expect(res.status).toBe(401);
 
 			expect((await call("/api/navigator", { headers: { Cookie: cookie } })).status).toBe(200);
+		});
+	});
+
+	describe("POST /logout-everywhere (#83)", () => {
+		it("recipient self-service: invalidates every session for the CALLER's own account, including the one used to call it", async () => {
+			const cookie = await createAccountAndLogin("nina", "a-real-password-1");
+			expect((await call("/api/navigator", { headers: { Cookie: cookie } })).status).toBe(200);
+
+			const res = await call("/logout-everywhere", { method: "POST", headers: { Cookie: cookie } });
+			expect(res.status).toBe(200);
+
+			expect((await call("/api/navigator", { headers: { Cookie: cookie } })).status).toBe(401);
+
+			// The password itself is untouched — a fresh login still works.
+			const newLogin = await call("/login", jsonBody({ username: "nina", password: "a-real-password-1" }));
+			expect(newLogin.status).toBe(200);
+		});
+
+		it("invalidates other devices' sessions too, not just the caller's own cookie", async () => {
+			await call("/admin/accounts", adminBody({ username: "oscar", password: "a-real-password-1" }));
+			const deviceA = cookieHeaderFrom(
+				(await call("/login", jsonBody({ username: "oscar", password: "a-real-password-1" }))).headers.get("Set-Cookie"),
+			);
+			const deviceB = cookieHeaderFrom(
+				(await call("/login", jsonBody({ username: "oscar", password: "a-real-password-1" }))).headers.get("Set-Cookie"),
+			);
+
+			const res = await call("/logout-everywhere", { method: "POST", headers: { Cookie: deviceA } });
+			expect(res.status).toBe(200);
+
+			expect((await call("/api/navigator", { headers: { Cookie: deviceA } })).status).toBe(401);
+			expect((await call("/api/navigator", { headers: { Cookie: deviceB } })).status).toBe(401);
+		});
+
+		it("requires a valid session — rejects an unauthenticated call (401)", async () => {
+			const res = await call("/logout-everywhere", { method: "POST" });
+			expect(res.status).toBe(401);
+		});
+
+		it("cannot be used to revoke a DIFFERENT recipient's sessions — always scoped to the caller's own account", async () => {
+			const victimCookie = await createAccountAndLogin("pat", "a-real-password-1");
+			const attackerCookie = await createAccountAndLogin("quinn", "a-real-password-1");
+
+			const res = await call("/logout-everywhere", { method: "POST", headers: { Cookie: attackerCookie } });
+			expect(res.status).toBe(200);
+
+			// Only the attacker's own session dies — the victim's is untouched.
+			expect((await call("/api/navigator", { headers: { Cookie: victimCookie } })).status).toBe(200);
+			expect((await call("/api/navigator", { headers: { Cookie: attackerCookie } })).status).toBe(401);
+		});
+	});
+
+	describe("atomic account KV writes (#84)", () => {
+		it("a reset racing a revoke-sessions call for the SAME account never loses either mutation", async () => {
+			await call("/admin/accounts", adminBody({ username: "riley", password: "original-password-1" }));
+
+			// Fire both admin mutations concurrently. Before #84, each read a stale copy of
+			// the account record and one write could clobber the other's field — either the
+			// password reset or the sessionEpoch bump could silently vanish.
+			const [resetRes, revokeRes] = await Promise.all([
+				call("/admin/accounts/reset", adminBody({ username: "riley", password: "brand-new-password-1" })),
+				call("/admin/accounts/revoke-sessions", adminBody({ username: "riley" })),
+			]);
+			expect(resetRes.status).toBe(200);
+			expect(revokeRes.status).toBe(200);
+
+			// The password change must have taken (reset's effect survived).
+			expect((await call("/login", jsonBody({ username: "riley", password: "original-password-1" }))).status).toBe(401);
+			const newLogin = await call("/login", jsonBody({ username: "riley", password: "brand-new-password-1" }));
+			expect(newLogin.status).toBe(200);
+
+			// sessionEpoch must reflect BOTH bumps (reset bumps once, revoke bumps once) —
+			// a lost update would leave it one short, and a session minted under the stale
+			// epoch would still verify.
+			const raw = await ENV.NAV_CACHE.get("auth:account:riley");
+			const parsed = JSON.parse(raw as string) as { sessionEpoch: number };
+			expect(parsed.sessionEpoch).toBe(2);
+		});
+
+		it("two concurrent create-account calls for the same new username: exactly one succeeds", async () => {
+			const [first, second] = await Promise.all([
+				call("/admin/accounts", adminBody({ username: "sam", password: "password-one-here" })),
+				call("/admin/accounts", adminBody({ username: "sam", password: "password-two-here" })),
+			]);
+			const statuses = [first.status, second.status].sort();
+			expect(statuses).toEqual([201, 409]);
 		});
 	});
 

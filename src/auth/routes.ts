@@ -204,7 +204,7 @@ export async function handleAdminCreateAccount(request: Request, env: AuthEnv): 
 	if ("error" in parsed) return parsed.error;
 	const { username, password } = parsed;
 
-	const result = await createAccount(env.NAV_CACHE, username, password);
+	const result = await createAccount(env.RATE_LIMITER, username, password);
 	if (!result.ok) return errorResponse(409, { error: result.error });
 	return jsonResponse(201, { ok: true, username: username.trim().toLowerCase() });
 }
@@ -222,7 +222,7 @@ export async function handleAdminResetPassword(request: Request, env: AuthEnv): 
 	if ("error" in parsed) return parsed.error;
 	const { username, password } = parsed;
 
-	const result = await resetPassword(env.NAV_CACHE, username, password);
+	const result = await resetPassword(env.RATE_LIMITER, username, password);
 	if (!result.ok) return errorResponse(404, { error: result.error });
 	return jsonResponse(200, { ok: true });
 }
@@ -249,7 +249,28 @@ export async function handleAdminRevokeSessions(request: Request, env: AuthEnv):
 		return errorResponse(400, { error: "missing or non-string username", field: "username" });
 	}
 
-	const result = await revokeSessions(env.NAV_CACHE, username);
+	const result = await revokeSessions(env.RATE_LIMITER, username);
 	if (!result.ok) return errorResponse(404, { error: result.error });
 	return jsonResponse(200, { ok: true });
+}
+
+/**
+ * POST /logout-everywhere — recipient self-service (#83), NOT operator-only. Requires
+ * a valid session (requireSession), then bumps the CALLER's OWN account's
+ * sessionEpoch via the same revokeSessions primitive the operator's
+ * /admin/accounts/revoke-sessions route uses — invalidating every session token
+ * issued for this account, including the one making this very request, regardless of
+ * its 24h natural expiry. #81 shipped the epoch plumbing end-to-end but only wired an
+ * operator-triggered path; this is the recipient-triggered one #81 called out as
+ * optional/out of scope at the time.
+ */
+export async function handleLogoutEverywhere(request: Request, env: AuthEnv): Promise<Response> {
+	if (request.method !== "POST") return errorResponse(405, { error: "method not allowed, expected POST" }, { Allow: "POST" });
+
+	const username = await requireSession(request, env);
+	if (!username) return unauthorizedResponse();
+
+	const result = await revokeSessions(env.RATE_LIMITER, username);
+	if (!result.ok) return errorResponse(404, { error: result.error });
+	return jsonResponse(200, { ok: true }, { "Set-Cookie": buildLogoutCookie() });
 }
