@@ -97,3 +97,15 @@ SuxOS/.github/.github/workflows/issue-build.yml@main` — the actual logic that 
 Any issue whose fix requires editing that reusable workflow is not buildable here for the same reason as
 suxvault-dependent issues: drop it as blocked on repo access, don't try to "fix" it by editing something in
 this repo that only calls the real logic.
+
+## `RateLimiterDO` (`src/auth/rateLimiter.ts`) is also the atomic-KV-write primitive for `src/auth/store.ts`
+
+Added 2026-07-19 (issue #84): Cloudflare KV has no compare-and-swap, so any `kv.get`-then-`kv.put` on the
+same key racing another writer for that key can silently drop one side's change. `createAccount`,
+`resetPassword`, and `revokeSessions` in `src/auth/store.ts` all route their account-record writes through
+`RateLimiterDO`'s `"kvMerge"` op (`atomicKvMerge` in `rateLimiter.ts`) instead of writing KV directly — the
+DO's per-id input gate serialises the whole read-modify-write, closing the race, and this reuses the
+already-provisioned `RATE_LIMITER` binding rather than needing a new Durable Object class + wrangler
+migration. If you add another mutating field to the `Account` record (or any other KV record that can be
+written by more than one caller), reuse `atomicKvMerge` rather than writing a fresh `kv.get`/`kv.put` pair —
+that plain pattern is exactly the bug #84 fixed.
