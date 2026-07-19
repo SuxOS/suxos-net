@@ -87,3 +87,13 @@ same shape as the `#35`/`src/review.ts` situation above: a batch pipeline can on
 `main`, it cannot push fix/rebase commits onto another open PR's branch, so #30/#31 are not buildable here
 until a human merges/rebases #34. #32 (real frontend route) depends on #30/#31 landing plus suxvault
 access, so it's blocked transitively. Before re-attempting #30/#31/#32, check whether PR #34 has merged.
+
+## `SuxOS/.github` (the reusable-workflow repo) is also unreachable from the builder token
+
+Verified 2026-07-19 (issue #67 triage): `gh api repos/SuxOS/.github` 404s, same as the `suxvault`
+unreachability noted above. `.github/workflows/issue-build.yml` in this repo just does `uses:
+SuxOS/.github/.github/workflows/issue-build.yml@main` — the actual logic that generates a batch PR's body
+(including its `Closes #N` list, the bug flagged in #67) lives in that unreachable repo, not in this one.
+Any issue whose fix requires editing that reusable workflow is not buildable here for the same reason as
+suxvault-dependent issues: drop it as blocked on repo access, don't try to "fix" it by editing something in
+this repo that only calls the real logic.
