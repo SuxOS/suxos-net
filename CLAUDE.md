@@ -77,3 +77,13 @@ ls-tree -r main --name-only` shows no `src/references/` directory at all, even t
 clusters above, just caught earlier this time: don't infer a dependency has landed from its label or from
 another issue's prose — `git ls-tree`/grep `main` for the actual file before building on top of it. If it's
 not there, drop and release the claim; the foundation issue may still be mid-build by a concurrent run.
+
+## #30/#31 (real QA retrieval) are already built — on an unmerged draft PR, not on `main`
+
+Verified 2026-07-19: `src/qa.ts` on `main` is still the stub (`status: "not_implemented"`), but draft PR
+#34 (`feat/real-qa-retrieval`, mergeable state `CONFLICTING`) already implements both #30 (Vectorize
+embedding pipeline, `src/embeddings/*`) and #31 (real `/api/qa` synthesis) with passing tests. This is the
+same shape as the `#35`/`src/review.ts` situation above: a batch pipeline can only open new PRs against
+`main`, it cannot push fix/rebase commits onto another open PR's branch, so #30/#31 are not buildable here
+until a human merges/rebases #34. #32 (real frontend route) depends on #30/#31 landing plus suxvault
+access, so it's blocked transitively. Before re-attempting #30/#31/#32, check whether PR #34 has merged.
