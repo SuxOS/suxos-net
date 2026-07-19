@@ -28,6 +28,13 @@ export interface Account {
 	username: string;
 	passwordHash: PasswordHash;
 	createdAt: string;
+	// Session generation counter (#81). Embedded in every session token minted for
+	// this account (src/auth/session.ts) and compared against on every authenticated
+	// request (requireSession, src/auth/routes.ts) — bumping it invalidates every
+	// token minted under an older value, independent of that token's natural 24h
+	// expiry. Defaults to 0 for accounts created before this field existed (an absent
+	// field reads back as `undefined`, which callers normalise to 0).
+	sessionEpoch: number;
 }
 
 function accountKey(username: string): string {
@@ -60,6 +67,7 @@ export async function createAccount(kv: KVNamespace, username: string, password:
 		username: trimmedUsername.toLowerCase(),
 		passwordHash,
 		createdAt: new Date().toISOString(),
+		sessionEpoch: 0,
 	};
 	await kv.put(accountKey(trimmedUsername), JSON.stringify(account));
 	return { ok: true };
@@ -67,7 +75,13 @@ export async function createAccount(kv: KVNamespace, username: string, password:
 
 export type ResetPasswordResult = { ok: true } | { ok: false; error: string };
 
-/** Operator-only direct password reset — no email-based reset flow (design §1). */
+/**
+ * Operator-only direct password reset — no email-based reset flow (design §1).
+ * Also bumps sessionEpoch (#81): a stolen/still-live session cookie must not
+ * survive the very reset that's meant to lock its holder out. Without this, a
+ * reset only changed the password hash — any session token minted before the
+ * reset kept verifying successfully for up to 24h more.
+ */
 export async function resetPassword(kv: KVNamespace, username: string, newPassword: string): Promise<ResetPasswordResult> {
 	if (newPassword.length < 8) return { ok: false, error: "password must be at least 8 characters" };
 
@@ -75,7 +89,25 @@ export async function resetPassword(kv: KVNamespace, username: string, newPasswo
 	if (!existing) return { ok: false, error: "account not found" };
 
 	const passwordHash = await hashPassword(newPassword);
-	const updated: Account = { ...existing, passwordHash };
+	const updated: Account = { ...existing, passwordHash, sessionEpoch: (existing.sessionEpoch ?? 0) + 1 };
+	await kv.put(accountKey(username), JSON.stringify(updated));
+	return { ok: true };
+}
+
+export type RevokeSessionsResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Operator-only "force logout this recipient" (#81) — bumps sessionEpoch without
+ * touching the password, so every session token minted before this call fails its
+ * next epoch check (requireSession, src/auth/routes.ts) regardless of expiry. This
+ * is the incident-response action for "I don't want to reset the password, I just
+ * want every current session dead" (e.g. a shared/logged-in device was lost).
+ */
+export async function revokeSessions(kv: KVNamespace, username: string): Promise<RevokeSessionsResult> {
+	const existing = await getAccount(kv, username);
+	if (!existing) return { ok: false, error: "account not found" };
+
+	const updated: Account = { ...existing, sessionEpoch: (existing.sessionEpoch ?? 0) + 1 };
 	await kv.put(accountKey(username), JSON.stringify(updated));
 	return { ok: true };
 }

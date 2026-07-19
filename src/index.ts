@@ -9,6 +9,7 @@ import { DEMO_CSS, DEMO_HTML, DEMO_JS } from "./frontend/demoFrontend";
 import {
 	handleAdminCreateAccount,
 	handleAdminResetPassword,
+	handleAdminRevokeSessions,
 	handleLogin,
 	handleLogout,
 	requireSession,
@@ -366,6 +367,9 @@ export default {
 		// no Cloudflare Access edge fronts this staging Worker yet.
 		if (url.pathname === "/admin/accounts") return withSecurityHeaders(await handleAdminCreateAccount(request, env));
 		if (url.pathname === "/admin/accounts/reset") return withSecurityHeaders(await handleAdminResetPassword(request, env));
+		// Force-logout a recipient without touching their password (#81) — bumps
+		// sessionEpoch so every already-issued session token for them stops verifying.
+		if (url.pathname === "/admin/accounts/revoke-sessions") return withSecurityHeaders(await handleAdminRevokeSessions(request, env));
 		// Read-only admin view of the access-audit log (#20).
 		if (url.pathname === "/admin/audit-log") return withSecurityHeaders(await handleAuditLogAdmin(request, env));
 

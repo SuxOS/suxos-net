@@ -689,6 +689,16 @@ describe("recipient auth (#18)", () => {
 			expect(setCookie).toMatch(/^suxos_session=/);
 		});
 
+		it("keeps a dotted username authenticated on the request AFTER login, not just at login (#80)", async () => {
+			// Before the fix, verifySessionToken split on "." expecting exactly 3 parts, so
+			// a dotted username like "jane.doe" produced a 4-part token that failed the
+			// length check on every request AFTER the one that set the cookie — login itself
+			// never calls verifySessionToken, so it always looked like it "worked".
+			const cookie = await createAccountAndLogin("jane.doe", "a-real-password-99");
+			const res = await call("/api/navigator", { headers: { Cookie: cookie } });
+			expect(res.status).toBe(200);
+		});
+
 		it("rejects a wrong password with a generic 401", async () => {
 			await call("/admin/accounts", adminBody({ username: "dave", password: "correct-password-here" }));
 			const res = await call("/login", jsonBody({ username: "dave", password: "wrong-password-here" }));
@@ -789,6 +799,49 @@ describe("recipient auth (#18)", () => {
 			expect((await call("/login", jsonBody({ username: "ivan", password: "attacker-reset-pw-1" }))).status).toBe(401);
 			expect((await call("/login", jsonBody({ username: "ivan", password: "original-password-1" }))).status).toBe(200);
 		});
+
+		it("invalidates a session cookie issued before the reset (#81) — the incident-response gap the reset is supposed to close", async () => {
+			const cookie = await createAccountAndLogin("kelly", "original-password-1");
+			expect((await call("/api/navigator", { headers: { Cookie: cookie } })).status).toBe(200);
+
+			const resetRes = await call("/admin/accounts/reset", adminBody({ username: "kelly", password: "brand-new-password-1" }));
+			expect(resetRes.status).toBe(200);
+
+			// The attacker's already-issued cookie must stop working immediately, not linger
+			// for up to 24h more just because its signature and expiry are still technically valid.
+			const staleRes = await call("/api/navigator", { headers: { Cookie: cookie } });
+			expect(staleRes.status).toBe(401);
+		});
+	});
+
+	describe("POST /admin/accounts/revoke-sessions", () => {
+		it("force-logs-out a recipient without touching their password", async () => {
+			const cookie = await createAccountAndLogin("liam", "a-real-password-1");
+			expect((await call("/api/navigator", { headers: { Cookie: cookie } })).status).toBe(200);
+
+			const revokeRes = await call("/admin/accounts/revoke-sessions", adminBody({ username: "liam" }));
+			expect(revokeRes.status).toBe(200);
+
+			expect((await call("/api/navigator", { headers: { Cookie: cookie } })).status).toBe(401);
+
+			// The password itself is untouched — a fresh login still works.
+			const newLogin = await call("/login", jsonBody({ username: "liam", password: "a-real-password-1" }));
+			expect(newLogin.status).toBe(200);
+		});
+
+		it("returns 404 for revoking a nonexistent account", async () => {
+			const res = await call("/admin/accounts/revoke-sessions", adminBody({ username: "ghost" }));
+			expect(res.status).toBe(404);
+		});
+
+		it("rejects a revoke-sessions call with no operator token (401), leaving the existing session valid", async () => {
+			const cookie = await createAccountAndLogin("mona", "a-real-password-1");
+
+			const res = await call("/admin/accounts/revoke-sessions", jsonBody({ username: "mona" }));
+			expect(res.status).toBe(401);
+
+			expect((await call("/api/navigator", { headers: { Cookie: cookie } })).status).toBe(200);
+		});
 	});
 
 	describe("hard constraint: password hashes are never plaintext or reversible", () => {
@@ -818,8 +871,21 @@ describe("recipient auth (#18)", () => {
 		it("rejects a session token with a tampered username but original signature", async () => {
 			const cookie = await createAccountAndLogin("ivy", "a-real-password-99");
 			const token = cookie.split("=")[1];
-			const [, expiresAt, signature] = token.split(".");
-			const tamperedToken = `mallory.${expiresAt}.${signature}`;
+			const [, epoch, expiresAt, signature] = token.split(".");
+			const tamperedToken = `mallory.${epoch}.${expiresAt}.${signature}`;
+			const res = await call("/api/navigator", { headers: { Cookie: `suxos_session=${tamperedToken}` } });
+			expect(res.status).toBe(401);
+		});
+
+		it("rejects a session token for a dotted username with the original signature re-split onto a different username", async () => {
+			// suxos-net#80 regression: a dotted username must round-trip through login AND
+			// requireSession — this is the tampering counterpart to the plain-username case
+			// above, confirming the right-to-left parse doesn't accidentally accept a
+			// forged username reassembled from a dotted one's segments.
+			const cookie = await createAccountAndLogin("jane.doe", "a-real-password-99");
+			const token = cookie.split("=")[1];
+			const [, , epoch, expiresAt, signature] = token.split(".");
+			const tamperedToken = `mallory.${epoch}.${expiresAt}.${signature}`;
 			const res = await call("/api/navigator", { headers: { Cookie: `suxos_session=${tamperedToken}` } });
 			expect(res.status).toBe(401);
 		});
@@ -827,7 +893,7 @@ describe("recipient auth (#18)", () => {
 		it("rejects an expired session token", async () => {
 			const { createSessionToken } = await import("./auth/session");
 			const longAgo = Date.now() - 1000 * 60 * 60 * 48; // 48h ago, well past the 24h expiry
-			const expiredToken = await createSessionToken("alice", ENV.SESSION_SECRET, longAgo);
+			const expiredToken = await createSessionToken("alice", ENV.SESSION_SECRET, 0, longAgo);
 			const res = await call("/api/navigator", { headers: { Cookie: `suxos_session=${expiredToken}` } });
 			expect(res.status).toBe(401);
 		});
