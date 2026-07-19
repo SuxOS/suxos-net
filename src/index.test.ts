@@ -8,9 +8,10 @@ let ENV: Env;
 const OPERATOR_TOKEN = "test-operator-token-do-not-use-in-prod";
 
 beforeEach(() => {
+	const kv = createMemoryKv();
 	ENV = {
-		NAV_CACHE: createMemoryKv(),
-		RATE_LIMITER: createRateLimiterNamespace(),
+		NAV_CACHE: kv,
+		RATE_LIMITER: createRateLimiterNamespace(kv),
 		STAGING: "1",
 		ACCESS_STAGING_IDENTITY: "dev@localhost",
 		SESSION_SECRET: "test-session-secret-do-not-use-in-prod",
@@ -384,8 +385,11 @@ describe("GET /demo (frontend)", () => {
 describe("rate limiting on /api/*", () => {
 	function envWithFreshKv(): Env {
 		// Fresh DO namespace too — the accumulation tests below depend on starting from
-		// an empty per-IP counter, exactly as they depend on a fresh KV.
-		return { ...ENV, NAV_CACHE: createMemoryKv(), RATE_LIMITER: createRateLimiterNamespace() };
+		// an empty per-IP counter, exactly as they depend on a fresh KV. Both must share
+		// the same KV instance: account creation (via the DO) and login (direct KV read)
+		// need to see the same data.
+		const kv = createMemoryKv();
+		return { ...ENV, NAV_CACHE: kv, RATE_LIMITER: createRateLimiterNamespace(kv) };
 	}
 
 	// The limiter uses a fixed-window counter keyed on Math.floor(Date.now() / window)
@@ -841,6 +845,49 @@ describe("recipient auth (#18)", () => {
 			expect(res.status).toBe(401);
 
 			expect((await call("/api/navigator", { headers: { Cookie: cookie } })).status).toBe(200);
+		});
+	});
+
+	describe("POST /logout-everywhere (#83)", () => {
+		it("invalidates every session for the caller's own account, including other devices", async () => {
+			const deviceA = await createAccountAndLogin("nina", "a-real-password-1");
+			const loginB = await call("/login", jsonBody({ username: "nina", password: "a-real-password-1" }));
+			expect(loginB.status).toBe(200);
+			const deviceB = loginB.headers.get("Set-Cookie");
+			if (!deviceB) throw new Error("expected a Set-Cookie header");
+			const deviceBCookie = deviceB.split(";")[0];
+
+			const res = await call("/logout-everywhere", { method: "POST", headers: { Cookie: deviceA } });
+			expect(res.status).toBe(200);
+
+			expect((await call("/api/navigator", { headers: { Cookie: deviceA } })).status).toBe(401);
+			expect((await call("/api/navigator", { headers: { Cookie: deviceBCookie } })).status).toBe(401);
+
+			// The password itself is untouched — a fresh login still works.
+			const freshLogin = await call("/login", jsonBody({ username: "nina", password: "a-real-password-1" }));
+			expect(freshLogin.status).toBe(200);
+		});
+
+		it("requires a valid session (401 with no cookie)", async () => {
+			const res = await call("/logout-everywhere", { method: "POST" });
+			expect(res.status).toBe(401);
+		});
+
+		it("cannot be used to revoke another recipient's sessions — only the caller's own", async () => {
+			const owenCookie = await createAccountAndLogin("owen", "a-real-password-1");
+			const paulaCookie = await createAccountAndLogin("paula", "a-real-password-1");
+
+			const res = await call("/logout-everywhere", { method: "POST", headers: { Cookie: owenCookie } });
+			expect(res.status).toBe(200);
+
+			expect((await call("/api/navigator", { headers: { Cookie: owenCookie } })).status).toBe(401);
+			expect((await call("/api/navigator", { headers: { Cookie: paulaCookie } })).status).toBe(200);
+		});
+
+		it("rejects non-POST methods (405)", async () => {
+			const cookie = await createAccountAndLogin("quinn", "a-real-password-1");
+			const res = await call("/logout-everywhere", { method: "GET", headers: { Cookie: cookie } });
+			expect(res.status).toBe(405);
 		});
 	});
 

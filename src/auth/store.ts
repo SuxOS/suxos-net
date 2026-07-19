@@ -10,36 +10,31 @@
  *
  * One real record per recipient, created only via the operator-only admin routes in
  * src/auth/routes.ts — there is no self-serve signup path anywhere in this module.
+ *
+ * Mutations (create/resetPassword/revokeSessions) are routed through the
+ * RateLimiterDO (src/auth/rateLimiter.ts, #84) so concurrent writes to the same
+ * account can't race each other via a stale get-then-put; getAccount stays a direct,
+ * unserialised KV read since reads don't need the same guarantee.
  */
 
-import { hashPassword, type PasswordHash } from "./crypto";
 import {
+	accountKey,
 	admitLoginAttempt as admitLoginAttemptDO,
 	clearLockout,
+	createAccountAtomic,
 	getLockoutStatus,
+	type Account,
+	type CreateAccountResult,
 	type LockoutAdmitResult,
 	type LockoutStatus,
+	type ResetPasswordResult,
+	type RevokeSessionsResult,
 	recordLockoutFailure,
+	resetPasswordAtomic,
+	revokeSessionsAtomic,
 } from "./rateLimiter";
 
-const ACCOUNT_KEY_PREFIX = "auth:account:";
-
-export interface Account {
-	username: string;
-	passwordHash: PasswordHash;
-	createdAt: string;
-	// Session generation counter (#81). Embedded in every session token minted for
-	// this account (src/auth/session.ts) and compared against on every authenticated
-	// request (requireSession, src/auth/routes.ts) — bumping it invalidates every
-	// token minted under an older value, independent of that token's natural 24h
-	// expiry. Defaults to 0 for accounts created before this field existed (an absent
-	// field reads back as `undefined`, which callers normalise to 0).
-	sessionEpoch: number;
-}
-
-function accountKey(username: string): string {
-	return ACCOUNT_KEY_PREFIX + username.trim().toLowerCase();
-}
+export type { Account, CreateAccountResult, ResetPasswordResult, RevokeSessionsResult };
 
 export async function getAccount(kv: KVNamespace, username: string): Promise<Account | null> {
 	const raw = await kv.get(accountKey(username));
@@ -47,54 +42,39 @@ export async function getAccount(kv: KVNamespace, username: string): Promise<Acc
 	return JSON.parse(raw) as Account;
 }
 
-export type CreateAccountResult = { ok: true } | { ok: false; error: string };
-
 /**
  * Operator-only: creates one account for one recipient. Never invoked from a public
  * self-serve route — always from the admin surface behind assertStagingAccess (and,
  * in a real deployment, behind the operator's Cloudflare Access gate, unchanged).
+ *
+ * Routed through the RateLimiterDO (#84): a plain KV get-then-put here raced with
+ * concurrent resetPassword/revokeSessions calls on the same username (each could read
+ * a stale Account and clobber the other's write). The DO serialises all three
+ * mutations per-account — see src/auth/rateLimiter.ts.
  */
-export async function createAccount(kv: KVNamespace, username: string, password: string): Promise<CreateAccountResult> {
-	const trimmedUsername = username.trim();
-	if (trimmedUsername.length === 0) return { ok: false, error: "username must not be empty" };
-	if (password.length < 8) return { ok: false, error: "password must be at least 8 characters" };
-
-	const existing = await getAccount(kv, trimmedUsername);
-	if (existing) return { ok: false, error: "account already exists" };
-
-	const passwordHash = await hashPassword(password);
-	const account: Account = {
-		username: trimmedUsername.toLowerCase(),
-		passwordHash,
-		createdAt: new Date().toISOString(),
-		sessionEpoch: 0,
-	};
-	await kv.put(accountKey(trimmedUsername), JSON.stringify(account));
-	return { ok: true };
+export async function createAccount(
+	rateLimiter: DurableObjectNamespace,
+	username: string,
+	password: string,
+): Promise<CreateAccountResult> {
+	return createAccountAtomic(rateLimiter, username, password);
 }
-
-export type ResetPasswordResult = { ok: true } | { ok: false; error: string };
 
 /**
  * Operator-only direct password reset — no email-based reset flow (design §1).
  * Also bumps sessionEpoch (#81): a stolen/still-live session cookie must not
  * survive the very reset that's meant to lock its holder out. Without this, a
  * reset only changed the password hash — any session token minted before the
- * reset kept verifying successfully for up to 24h more.
+ * reset kept verifying successfully for up to 24h more. Routed through the
+ * RateLimiterDO (#84) for the same atomicity reason as createAccount above.
  */
-export async function resetPassword(kv: KVNamespace, username: string, newPassword: string): Promise<ResetPasswordResult> {
-	if (newPassword.length < 8) return { ok: false, error: "password must be at least 8 characters" };
-
-	const existing = await getAccount(kv, username);
-	if (!existing) return { ok: false, error: "account not found" };
-
-	const passwordHash = await hashPassword(newPassword);
-	const updated: Account = { ...existing, passwordHash, sessionEpoch: (existing.sessionEpoch ?? 0) + 1 };
-	await kv.put(accountKey(username), JSON.stringify(updated));
-	return { ok: true };
+export async function resetPassword(
+	rateLimiter: DurableObjectNamespace,
+	username: string,
+	newPassword: string,
+): Promise<ResetPasswordResult> {
+	return resetPasswordAtomic(rateLimiter, username, newPassword);
 }
-
-export type RevokeSessionsResult = { ok: true } | { ok: false; error: string };
 
 /**
  * Operator-only "force logout this recipient" (#81) — bumps sessionEpoch without
@@ -102,14 +82,11 @@ export type RevokeSessionsResult = { ok: true } | { ok: false; error: string };
  * next epoch check (requireSession, src/auth/routes.ts) regardless of expiry. This
  * is the incident-response action for "I don't want to reset the password, I just
  * want every current session dead" (e.g. a shared/logged-in device was lost).
+ * Routed through the RateLimiterDO (#84) for the same atomicity reason as
+ * createAccount above.
  */
-export async function revokeSessions(kv: KVNamespace, username: string): Promise<RevokeSessionsResult> {
-	const existing = await getAccount(kv, username);
-	if (!existing) return { ok: false, error: "account not found" };
-
-	const updated: Account = { ...existing, sessionEpoch: (existing.sessionEpoch ?? 0) + 1 };
-	await kv.put(accountKey(username), JSON.stringify(updated));
-	return { ok: true };
+export async function revokeSessions(rateLimiter: DurableObjectNamespace, username: string): Promise<RevokeSessionsResult> {
+	return revokeSessionsAtomic(rateLimiter, username);
 }
 
 // --- Login rate limiting / lockout (also closes the general "no rate limiting on
@@ -121,8 +98,9 @@ export async function revokeSessions(kv: KVNamespace, username: string): Promise
 // same pre-increment count and never trip the 5-attempt threshold (security-review
 // HIGH on #35). Routing through the DO makes increment-and-check atomic — the budget
 // (5 attempts / 15 min) and the lock-from-tripping-attempt semantics are unchanged;
-// only the store backing them moved from KV to the serialised DO. Accounts stay in
-// KV (no atomicity requirement — one operator-only writer). ---
+// only the store backing them moved from KV to the serialised DO. Account mutations
+// (create/resetPassword/revokeSessions, above) are now also routed through the DO for
+// the same reason (#84) — reads (getAccount) stay a direct, unserialised KV get. ---
 
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_WINDOW_MS = 15 * 60 * 1000;

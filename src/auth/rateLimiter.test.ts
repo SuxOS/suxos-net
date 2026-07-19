@@ -1,7 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createMemoryKv } from "../test/kvMock";
 import { createRateLimiterNamespace } from "../test/doMock";
 import { isIpRequestAllowed } from "./rateLimiter";
-import { AUTH_LOCKOUT_CONSTANTS, checkLockout, clearFailedAttempts, recordFailedAttempt } from "./store";
+import {
+	AUTH_LOCKOUT_CONSTANTS,
+	checkLockout,
+	clearFailedAttempts,
+	createAccount,
+	getAccount,
+	recordFailedAttempt,
+	resetPassword,
+	revokeSessions,
+} from "./store";
 
 const IP_LIMIT = 60;
 const IP_WINDOW_MS = 60_000;
@@ -116,5 +126,46 @@ describe("RateLimiterDO — per-username lockout (atomic)", () => {
 
 		clock.mockReturnValue(base + LOCKOUT_WINDOW_MS + 1);
 		expect((await checkLockout(ns, "erin")).locked).toBe(false);
+	});
+});
+
+describe("RateLimiterDO — atomic account mutations (#84)", () => {
+	it("serialises concurrent resetPassword + revokeSessions so neither write is lost", async () => {
+		// Before #84, resetPassword and revokeSessions each did a plain KV get-then-put:
+		// two concurrent calls on the same account could both read the same pre-update
+		// Account, and whichever put last would silently clobber the other's field
+		// (either the new passwordHash or the sessionEpoch bump). Routed through the DO,
+		// both mutations on one account are serialised the same way login lockout is.
+		const kv = createMemoryKv();
+		const ns = createRateLimiterNamespace(kv);
+		await createAccount(ns, "rachel", "original-password-1");
+		const before = await getAccount(kv, "rachel");
+		if (!before) throw new Error("expected account to exist");
+
+		const [resetResult, revokeResult] = await Promise.all([
+			resetPassword(ns, "rachel", "brand-new-password-1"),
+			revokeSessions(ns, "rachel"),
+		]);
+		expect(resetResult.ok).toBe(true);
+		expect(revokeResult.ok).toBe(true);
+
+		// Both writes must be reflected: the password changed AND the epoch advanced by
+		// exactly 2 (one bump from resetPassword, one from revokeSessions) — a lost
+		// update would leave the epoch only 1 higher than before.
+		const after = await getAccount(kv, "rachel");
+		if (!after) throw new Error("expected account to still exist");
+		expect(after.passwordHash).not.toEqual(before.passwordHash);
+		expect(after.sessionEpoch).toBe((before.sessionEpoch ?? 0) + 2);
+	});
+
+	it("createAccount rejects a duplicate even when racing another createAccount for the same username", async () => {
+		const kv = createMemoryKv();
+		const ns = createRateLimiterNamespace(kv);
+
+		const results = await Promise.all(
+			Array.from({ length: 10 }, () => createAccount(ns, "sam", "a-real-password-1")),
+		);
+		expect(results.filter((r) => r.ok).length).toBe(1);
+		expect(results.filter((r) => !r.ok).length).toBe(9);
 	});
 });

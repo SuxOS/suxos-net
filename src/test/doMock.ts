@@ -13,8 +13,16 @@
  * This is the same single-threaded model runInDurableObject / miniflare provide; it is
  * NOT the real workerd runtime, so it does not exercise cross-region placement or
  * eviction — only the counter logic and its serialisation contract.
+ *
+ * Also backs the atomic account-mutation ops (#84), which need the DO's env.NAV_CACHE
+ * to be the SAME KVNamespace instance the test's Worker env reads directly (e.g. for
+ * login/requireSession) — otherwise an account created through the DO would be
+ * invisible outside it. Callers that exercise account creation/login MUST pass their
+ * test's KV instance in; callers that only exercise rate-limit/lockout ops can omit it
+ * and get a private throwaway KV (never touched by those ops).
  */
 import { RateLimiterDO } from "../auth/rateLimiter";
+import { createMemoryKv } from "./kvMock";
 
 function createMemoryStorage(): DurableObjectStorage {
 	const store = new Map<string, unknown>();
@@ -36,13 +44,13 @@ interface Instance {
 	tail: Promise<unknown>;
 }
 
-export function createRateLimiterNamespace(): DurableObjectNamespace {
+export function createRateLimiterNamespace(kv: KVNamespace = createMemoryKv()): DurableObjectNamespace {
 	const instances = new Map<string, Instance>();
 	const entryFor = (name: string): Instance => {
 		let entry = instances.get(name);
 		if (!entry) {
 			const state = { storage: createMemoryStorage() } as unknown as DurableObjectState;
-			entry = { inst: new RateLimiterDO(state), tail: Promise.resolve() };
+			entry = { inst: new RateLimiterDO(state, { NAV_CACHE: kv }), tail: Promise.resolve() };
 			instances.set(name, entry);
 		}
 		return entry;

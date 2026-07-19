@@ -12,6 +12,7 @@ import {
 	handleAdminRevokeSessions,
 	handleLogin,
 	handleLogout,
+	handleLogoutEverywhere,
 	requireSession,
 	unauthorizedResponse,
 } from "./auth/routes";
@@ -358,6 +359,11 @@ export default {
 		// --- Recipient auth (#18) ---
 		if (url.pathname === "/login") return withSecurityHeaders(await handleLogin(request, env));
 		if (url.pathname === "/logout") return withSecurityHeaders(await handleLogout(request));
+		// Recipient self-service "log out everywhere" (#83) — bumps the CALLER's own
+		// sessionEpoch via the same revokeSessions primitive the operator-only
+		// /admin/accounts/revoke-sessions route uses, but scoped to the authenticated
+		// caller's own account only.
+		if (url.pathname === "/logout-everywhere") return withSecurityHeaders(await handleLogoutEverywhere(request, env));
 
 		// --- Operator-only admin routes: account provisioning + reset. No self-serve
 		// signup exists anywhere in this Worker — these are the only ways an account

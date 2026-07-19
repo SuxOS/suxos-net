@@ -97,3 +97,14 @@ SuxOS/.github/.github/workflows/issue-build.yml@main` — the actual logic that 
 Any issue whose fix requires editing that reusable workflow is not buildable here for the same reason as
 suxvault-dependent issues: drop it as blocked on repo access, don't try to "fix" it by editing something in
 this repo that only calls the real logic.
+
+## `git fetch && git rebase origin/main` before trusting `git ls-tree main` for a "does this exist yet" check
+
+Verified 2026-07-19 (issues #83/#84 triage): the `bot/issue-build-*` branch is cut once at job start, but a
+same-day PR (#82, closing #80/#81) can merge to `main` *after* that cut and *before* this builder's own
+push — `git ls-tree -r main --name-only` and reads against a stale local `main` will then show fields/
+functions (e.g. `sessionEpoch`, `revokeSessions` in `src/auth/store.ts`) as missing even though they exist
+on the real `origin/main`, making a legitimately-buildable issue look stranded like the `#35`/`src/qa.ts`
+clusters above. Always `git fetch origin main && git rebase origin/main` on the working branch before
+concluding a file/symbol a queued issue names doesn't exist yet — a plain local `git ls-tree`/`grep` against
+an unfetched branch is not proof of anything.

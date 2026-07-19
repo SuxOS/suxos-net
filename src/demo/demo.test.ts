@@ -7,9 +7,10 @@ import { buildDemoHighlightsView } from "./demoHighlights";
 import { createMemoryKv } from "../test/kvMock";
 import { createRateLimiterNamespace } from "../test/doMock";
 
+const demoKv = createMemoryKv();
 const ENV: Env = {
-	NAV_CACHE: createMemoryKv(),
-	RATE_LIMITER: createRateLimiterNamespace(),
+	NAV_CACHE: demoKv,
+	RATE_LIMITER: createRateLimiterNamespace(demoKv),
 	STAGING: "1",
 	ACCESS_STAGING_IDENTITY: "dev@localhost",
 	SESSION_SECRET: "test-session-secret-do-not-use-in-prod",

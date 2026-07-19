@@ -130,6 +130,27 @@ export async function handleLogout(request: Request): Promise<Response> {
 }
 
 /**
+ * POST /logout-everywhere — recipient self-service session revocation (#83). Unlike
+ * /logout (which only clears the caller's own cookie), this bumps the CALLER's own
+ * sessionEpoch via revokeSessions, so every session token issued for their account —
+ * including ones on other devices/browsers they can't reach — stops verifying on its
+ * very next request. Requires a valid session (requireSession); a recipient can only
+ * revoke their own sessions this way, never another account's (that stays operator-only
+ * via POST /admin/accounts/revoke-sessions). Also clears the caller's own cookie like
+ * /logout does, since their own just-bumped epoch would otherwise reject it too.
+ */
+export async function handleLogoutEverywhere(request: Request, env: AuthEnv): Promise<Response> {
+	if (request.method !== "POST") return errorResponse(405, { error: "method not allowed, expected POST" }, { Allow: "POST" });
+
+	const username = await requireSession(request, env);
+	if (!username) return unauthorizedResponse();
+
+	const result = await revokeSessions(env.RATE_LIMITER, username);
+	if (!result.ok) return errorResponse(404, { error: result.error });
+	return jsonResponse(200, { ok: true }, { "Set-Cookie": buildLogoutCookie() });
+}
+
+/**
  * Verifies the session cookie's signature and expiry, THEN checks that its embedded
  * epoch still matches the account's current sessionEpoch (#81) — one extra KV read
  * per authenticated request, accepted here because it's what makes a password reset
@@ -204,7 +225,7 @@ export async function handleAdminCreateAccount(request: Request, env: AuthEnv): 
 	if ("error" in parsed) return parsed.error;
 	const { username, password } = parsed;
 
-	const result = await createAccount(env.NAV_CACHE, username, password);
+	const result = await createAccount(env.RATE_LIMITER, username, password);
 	if (!result.ok) return errorResponse(409, { error: result.error });
 	return jsonResponse(201, { ok: true, username: username.trim().toLowerCase() });
 }
@@ -222,7 +243,7 @@ export async function handleAdminResetPassword(request: Request, env: AuthEnv): 
 	if ("error" in parsed) return parsed.error;
 	const { username, password } = parsed;
 
-	const result = await resetPassword(env.NAV_CACHE, username, password);
+	const result = await resetPassword(env.RATE_LIMITER, username, password);
 	if (!result.ok) return errorResponse(404, { error: result.error });
 	return jsonResponse(200, { ok: true });
 }
@@ -249,7 +270,7 @@ export async function handleAdminRevokeSessions(request: Request, env: AuthEnv):
 		return errorResponse(400, { error: "missing or non-string username", field: "username" });
 	}
 
-	const result = await revokeSessions(env.NAV_CACHE, username);
+	const result = await revokeSessions(env.RATE_LIMITER, username);
 	if (!result.ok) return errorResponse(404, { error: result.error });
 	return jsonResponse(200, { ok: true });
 }
