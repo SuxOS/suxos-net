@@ -382,6 +382,62 @@ describe("GET /demo (frontend)", () => {
 	});
 });
 
+describe("GET /admin (operator console frontend, #90)", () => {
+	it("renders an HTML page, not JSON", async () => {
+		const res = await call("/admin");
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toContain("text/html");
+		const body = await res.text();
+		expect(body).toContain("<title>");
+		expect(body).toContain('id="token-input"');
+		expect(body).toContain('id="create-account-form"');
+		expect(body).toContain('id="references-table"');
+		expect(body).toContain('id="audit-table"');
+	});
+
+	it("sets a same-origin CSP that still allows the page's own script/style/fetch", async () => {
+		const res = await call("/admin");
+		const csp = res.headers.get("Content-Security-Policy") ?? "";
+		expect(csp).toContain("script-src 'self'");
+		expect(csp).toContain("style-src 'self'");
+		expect(csp).toContain("connect-src 'self'");
+		expect(csp).not.toContain("unsafe-inline");
+	});
+
+	it("returns 405 with an Allow header for a non-GET method", async () => {
+		const res = await call("/admin", { method: "POST" });
+		expect(res.status).toBe(405);
+		expect(res.headers.get("Allow")).toBe("GET");
+	});
+
+	it("also renders at the trailing-slash path", async () => {
+		const res = await call("/admin/");
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toContain("text/html");
+	});
+
+	it("serves console.css as CSS", async () => {
+		const res = await call("/admin/console.css");
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toContain("text/css");
+	});
+
+	it("serves console.js as JS", async () => {
+		const res = await call("/admin/console.js");
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toContain("javascript");
+		const body = await res.text();
+		expect(body).toContain("/admin/accounts");
+		expect(body).toContain("/admin/references");
+		expect(body).toContain("/admin/audit-log");
+	});
+
+	it("does not itself require an operator bearer token (each API call it makes still does)", async () => {
+		const res = await call("/admin");
+		expect(res.status).toBe(200);
+	});
+});
+
 describe("rate limiting on /api/*", () => {
 	function envWithFreshKv(): Env {
 		// Fresh DO namespace too — the accumulation tests below depend on starting from
