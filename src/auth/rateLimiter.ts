@@ -45,14 +45,6 @@ interface FixedWindowRequest {
 	limit: number;
 	windowMs: number;
 }
-interface LockoutStatusRequest {
-	op: "lockoutStatus";
-}
-interface LockoutRecordRequest {
-	op: "lockoutRecord";
-	maxAttempts: number;
-	windowMs: number;
-}
 interface LockoutClearRequest {
 	op: "lockoutClear";
 }
@@ -68,18 +60,7 @@ interface KvMergeRequest {
 	requireExisting: boolean;
 	bumpField?: string;
 }
-type RateLimiterRequest =
-	| FixedWindowRequest
-	| LockoutStatusRequest
-	| LockoutRecordRequest
-	| LockoutClearRequest
-	| LockoutAdmitRequest
-	| KvMergeRequest;
-
-export interface LockoutStatus {
-	locked: boolean;
-	retryAfterMs?: number;
-}
+type RateLimiterRequest = FixedWindowRequest | LockoutClearRequest | LockoutAdmitRequest | KvMergeRequest;
 
 export interface LockoutAdmitResult {
 	admitted: boolean;
@@ -130,11 +111,6 @@ export class RateLimiterDO {
 		switch (body.op) {
 			case "fixedWindow":
 				return Response.json(await this.fixedWindow(body.limit, body.windowMs));
-			case "lockoutStatus":
-				return Response.json(await this.lockoutStatus());
-			case "lockoutRecord":
-				await this.lockoutRecord(body.maxAttempts, body.windowMs);
-				return Response.json({ ok: true });
 			case "lockoutClear":
 				await this.storage.delete(LOCKOUT_SLOT);
 				return Response.json({ ok: true });
@@ -161,34 +137,6 @@ export class RateLimiterDO {
 		if (state.count >= limit) return { allowed: false };
 		await this.storage.put(FIXED_WINDOW_SLOT, { count: state.count + 1, windowStart: state.windowStart });
 		return { allowed: true };
-	}
-
-	/** Read-only lockout check — mirrors the old checkLockout semantics exactly. */
-	private async lockoutStatus(now: number = Date.now()): Promise<LockoutStatus> {
-		const state = await this.storage.get<LockoutState>(LOCKOUT_SLOT);
-		if (!state) return { locked: false };
-		if (state.lockedUntil && now < state.lockedUntil) {
-			return { locked: true, retryAfterMs: state.lockedUntil - now };
-		}
-		return { locked: false };
-	}
-
-	/**
-	 * Records one failed login attempt — mirrors the old recordFailedAttempt exactly:
-	 * a sliding accumulation window (reset once it fully elapses) and, on reaching
-	 * `maxAttempts`, a lock that runs `windowMs` from the tripping attempt.
-	 */
-	private async lockoutRecord(maxAttempts: number, windowMs: number, now: number = Date.now()): Promise<void> {
-		const existing = await this.storage.get<LockoutState>(LOCKOUT_SLOT);
-		let state: LockoutState = existing ?? { failedAttempts: 0, windowStartedAt: now };
-		if (now - state.windowStartedAt > windowMs) {
-			state = { failedAttempts: 0, windowStartedAt: now };
-		}
-		state.failedAttempts += 1;
-		if (state.failedAttempts >= maxAttempts) {
-			state.lockedUntil = now + windowMs;
-		}
-		await this.storage.put(LOCKOUT_SLOT, state);
 	}
 
 	/**
@@ -280,19 +228,6 @@ export async function isIpRequestAllowed(
 ): Promise<boolean> {
 	const { allowed } = await callDO<{ allowed: boolean }>(namespace, `ip:${ip}`, { op: "fixedWindow", limit, windowMs });
 	return allowed;
-}
-
-export async function getLockoutStatus(namespace: DurableObjectNamespace, username: string): Promise<LockoutStatus> {
-	return callDO<LockoutStatus>(namespace, loginKey(username), { op: "lockoutStatus" });
-}
-
-export async function recordLockoutFailure(
-	namespace: DurableObjectNamespace,
-	username: string,
-	maxAttempts: number,
-	windowMs: number,
-): Promise<void> {
-	await callDO(namespace, loginKey(username), { op: "lockoutRecord", maxAttempts, windowMs });
 }
 
 export async function clearLockout(namespace: DurableObjectNamespace, username: string): Promise<void> {

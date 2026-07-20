@@ -13,15 +13,7 @@
  */
 
 import { hashPassword, type PasswordHash } from "./crypto";
-import {
-	admitLoginAttempt as admitLoginAttemptDO,
-	atomicKvMerge,
-	clearLockout,
-	getLockoutStatus,
-	type LockoutAdmitResult,
-	type LockoutStatus,
-	recordLockoutFailure,
-} from "./rateLimiter";
+import { admitLoginAttempt as admitLoginAttemptDO, atomicKvMerge, clearLockout, type LockoutAdmitResult } from "./rateLimiter";
 
 const ACCOUNT_KEY_PREFIX = "auth:account:";
 
@@ -142,7 +134,7 @@ export async function revokeSessions(rateLimiter: DurableObjectNamespace, userna
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_WINDOW_MS = 15 * 60 * 1000;
 
-export type { LockoutAdmitResult, LockoutStatus };
+export type { LockoutAdmitResult };
 
 /**
  * Atomically count one login attempt and decide if it may proceed to a password verify.
@@ -152,14 +144,6 @@ export type { LockoutAdmitResult, LockoutStatus };
  */
 export async function admitLoginAttempt(rateLimiter: DurableObjectNamespace, username: string): Promise<LockoutAdmitResult> {
 	return admitLoginAttemptDO(rateLimiter, username, MAX_FAILED_ATTEMPTS, LOCKOUT_WINDOW_MS);
-}
-
-export async function checkLockout(rateLimiter: DurableObjectNamespace, username: string): Promise<LockoutStatus> {
-	return getLockoutStatus(rateLimiter, username);
-}
-
-export async function recordFailedAttempt(rateLimiter: DurableObjectNamespace, username: string): Promise<void> {
-	await recordLockoutFailure(rateLimiter, username, MAX_FAILED_ATTEMPTS, LOCKOUT_WINDOW_MS);
 }
 
 export async function clearFailedAttempts(rateLimiter: DurableObjectNamespace, username: string): Promise<void> {
