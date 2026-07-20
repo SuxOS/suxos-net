@@ -197,6 +197,118 @@ fictional demo fixtures in tests, until a human curator adds real ones.
 
 ---
 
+## `POST /login`
+
+The only recipient authentication entry point (`src/auth/routes.ts`). Verifies an
+existing account; there is no self-serve signup route.
+
+**Headers:** `Content-Type: application/json` required.
+
+**Body:**
+
+```json
+{ "username": "recipient1", "password": "..." }
+```
+
+**200 response:** sets the session cookie and returns
+
+```json
+{ "ok": true, "username": "recipient1", "identity": "..." }
+```
+
+**Errors:**
+
+- `400 { "error": "...", "field": "content-type" }` — missing/wrong `Content-Type`.
+- `400 { "error": "request body must be valid JSON" }` — malformed JSON body.
+- `400 { "error": "request body must be a JSON object" }` — body isn't a JSON object.
+- `413 { "error": "..." }` — body exceeds the pre-parse byte-size limit.
+- `400 { "error": "...", "field": "username" | "password" }` — missing/empty/non-string
+  field.
+- `401 { "error": "invalid username or password" }` — unknown account or wrong
+  password; deliberately the same message for both to avoid username enumeration.
+- `429 { "error": "too many failed login attempts; try again later" }` with a
+  `Retry-After` header — the atomic per-username lockout (#35, #84) tripped.
+- `405` with `Allow: POST` — any method other than `POST`.
+
+---
+
+## `POST /logout`
+
+Clears the caller's own session cookie (`src/auth/routes.ts`). Does not invalidate the
+token itself — a copy already exfiltrated keeps working until its natural expiry or
+until the account's session epoch is bumped (see `/logout-everywhere` and
+`/admin/accounts/revoke-sessions` below).
+
+**200 response:** `{ "ok": true }`, with a `Set-Cookie` header clearing the session.
+
+**Errors:**
+
+- `405` with `Allow: POST` — any method other than `POST`.
+
+---
+
+## `POST /logout-everywhere`
+
+Recipient self-service (#83): invalidates every session token issued for the caller's
+own account, including the one making this request, by bumping the account's session
+epoch — the same primitive the operator's `/admin/accounts/revoke-sessions` uses.
+
+**Requires a recipient session** (session cookie).
+
+**200 response:** `{ "ok": true }`, with a `Set-Cookie` header clearing the session.
+
+**Errors:**
+
+- `401 { "error": "authentication required" }` — no valid recipient session.
+- `404 { "error": "..." }` — account no longer exists.
+- `405` with `Allow: POST` — any method other than `POST`.
+
+---
+
+## Account administration (`/admin/accounts*`, operator-only)
+
+Operator-only account provisioning/reset/revocation (`src/auth/routes.ts`). Same
+operator bearer-token gate as `/admin/references*`/`/admin/audit-log`
+(`Authorization: Bearer <OPERATOR_TOKEN>`); fails closed (`401`) when `OPERATOR_TOKEN`
+is unset. Never self-serve.
+
+- `POST /admin/accounts` — creates one account: `{ username, password }`. `409` on a
+  duplicate username.
+- `POST /admin/accounts/reset` — direct password reset, no email flow:
+  `{ username, password }`. `404` if the account doesn't exist.
+- `POST /admin/accounts/revoke-sessions` — force-logout: `{ username }`. Bumps the
+  account's session epoch without touching its password, so every session token
+  already issued for that recipient stops verifying on its next request. `404` if the
+  account doesn't exist.
+
+**Common errors** (all three routes):
+
+- `401 { "error": "operator authentication required" }` — missing/invalid
+  `Authorization: Bearer` token.
+- `400 { "error": "...", "field": "username" | "password" }` — missing/empty/non-string
+  field.
+- `405` with `Allow: POST` — any method other than `POST`.
+
+---
+
+## `GET /admin/audit-log`
+
+Read-only, paginated, oldest-first view of the access-audit log (#20). Operator-only,
+same bearer-token gate as the other `/admin/*` routes.
+
+**Query parameters:** `cursor` (optional, for pagination).
+
+**200 response:** `{ entries: [...], cursor }` (same pagination shape as
+`GET /admin/references`).
+
+**Errors:**
+
+- `401 { "error": "operator authentication required" }` — missing/invalid
+  `Authorization: Bearer` token.
+- `405` with `Allow: GET` — any method other than `GET`.
+
+---
+
 ## `GET /healthz`
 
 Liveness/identity check.
@@ -385,9 +497,8 @@ output via `GET /demo/flags` above, by `demo/demoHighlights.ts` which exposes
 above, and by their own test suites) — they are not exposed as standalone HTTP
 endpoints. See the README's "Generic tools" section for what each one does.
 
-This document covers every `/api/*`, `/healthz`, and `/demo/*` route `src/index.ts`
-serves. It does not yet cover the recipient-auth (`/login`, `/logout`) or operator-only
-`/admin/*` routes (`/admin/accounts`, `/admin/accounts/reset`, `/admin/audit-log`,
-`/admin/references*`) — those are documented in the relevant module's own header
-comments (`src/auth/routes.ts`, `src/audit/routes.ts`, `src/references/routes.ts`) and
-exercised in `src/index.test.ts`, but not written up here yet.
+This document covers every `/api/*`, `/healthz`, `/demo/*`, recipient-auth
+(`/login`, `/logout`, `/logout-everywhere`), and operator-only `/admin/*` route
+(`/admin/accounts*`, `/admin/audit-log`, `/admin/references*`) that `src/index.ts`
+serves — see also the relevant module's own header comments (`src/auth/routes.ts`,
+`src/audit/routes.ts`, `src/references/routes.ts`) and `src/index.test.ts`.
