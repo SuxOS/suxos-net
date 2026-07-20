@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRateLimiterNamespace } from "../test/doMock";
 import { isIpRequestAllowed } from "./rateLimiter";
-import { AUTH_LOCKOUT_CONSTANTS, checkLockout, clearFailedAttempts, recordFailedAttempt } from "./store";
+import { admitLoginAttempt, AUTH_LOCKOUT_CONSTANTS, clearFailedAttempts } from "./store";
 
 const IP_LIMIT = 60;
 const IP_WINDOW_MS = 60_000;
@@ -46,50 +46,53 @@ describe("RateLimiterDO — per-IP fixed-window limiter (atomic)", () => {
 	});
 });
 
+// admitLoginAttempt (RateLimiterDO's "lockoutAdmit" op) is the ONLY lockout gate wired
+// into /login (src/auth/routes.ts) — there is no separate check-then-record step to
+// test in isolation, so these exercise the atomic admit-and-count primitive directly.
 describe("RateLimiterDO — per-username lockout (atomic)", () => {
 	it("does not lock before the threshold, locks on reaching it", async () => {
 		const ns = createRateLimiterNamespace();
-		for (let i = 0; i < MAX_FAILED_ATTEMPTS - 1; i++) {
-			await recordFailedAttempt(ns, "erin");
+		for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) {
+			expect((await admitLoginAttempt(ns, "erin")).admitted).toBe(true);
 		}
-		expect((await checkLockout(ns, "erin")).locked).toBe(false);
 
-		await recordFailedAttempt(ns, "erin"); // the MAX_FAILED_ATTEMPTS-th failure
-		const status = await checkLockout(ns, "erin");
-		expect(status.locked).toBe(true);
-		expect(status.retryAfterMs).toBeGreaterThan(0);
-		expect(status.retryAfterMs).toBeLessThanOrEqual(LOCKOUT_WINDOW_MS);
+		const result = await admitLoginAttempt(ns, "erin"); // the (MAX_FAILED_ATTEMPTS + 1)-th attempt
+		expect(result.admitted).toBe(false);
+		expect(result.retryAfterMs).toBeGreaterThan(0);
+		expect(result.retryAfterMs).toBeLessThanOrEqual(LOCKOUT_WINDOW_MS);
 	});
 
 	it("holds the lockout threshold under a concurrent burst of failures (#35)", async () => {
 		// The lockout counter was the second TOCTOU HIGH: concurrent failed logins each
 		// read the same count and never trip the 5-attempt threshold. Serialised through
-		// the DO, a burst of failures locks the account just as a sequence would.
+		// the DO, a burst of attempts admits exactly the budget, no matter the concurrency.
 		const ns = createRateLimiterNamespace();
-		await Promise.all(Array.from({ length: 20 }, () => recordFailedAttempt(ns, "mallory")));
-		expect((await checkLockout(ns, "mallory")).locked).toBe(true);
+		const burst = 20;
+		const outcomes = await Promise.all(Array.from({ length: burst }, () => admitLoginAttempt(ns, "mallory")));
+		expect(outcomes.filter((r) => r.admitted).length).toBe(MAX_FAILED_ATTEMPTS);
+		expect(outcomes.filter((r) => !r.admitted).length).toBe(burst - MAX_FAILED_ATTEMPTS);
 	});
 
 	it("keys lockouts per username", async () => {
 		const ns = createRateLimiterNamespace();
-		for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) await recordFailedAttempt(ns, "erin");
-		expect((await checkLockout(ns, "erin")).locked).toBe(true);
-		expect((await checkLockout(ns, "someone-else")).locked).toBe(false);
+		for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) await admitLoginAttempt(ns, "erin");
+		expect((await admitLoginAttempt(ns, "erin")).admitted).toBe(false);
+		expect((await admitLoginAttempt(ns, "someone-else")).admitted).toBe(true);
 	});
 
 	it("normalises the username (trim + lowercase) so the key is stable", async () => {
 		const ns = createRateLimiterNamespace();
-		for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) await recordFailedAttempt(ns, "  Erin  ");
-		expect((await checkLockout(ns, "erin")).locked).toBe(true);
+		for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) await admitLoginAttempt(ns, "  Erin  ");
+		expect((await admitLoginAttempt(ns, "erin")).admitted).toBe(false);
 	});
 
 	it("clearFailedAttempts resets the counter", async () => {
 		const ns = createRateLimiterNamespace();
-		for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) await recordFailedAttempt(ns, "erin");
-		expect((await checkLockout(ns, "erin")).locked).toBe(true);
+		for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) await admitLoginAttempt(ns, "erin");
+		expect((await admitLoginAttempt(ns, "erin")).admitted).toBe(false);
 
 		await clearFailedAttempts(ns, "erin");
-		expect((await checkLockout(ns, "erin")).locked).toBe(false);
+		expect((await admitLoginAttempt(ns, "erin")).admitted).toBe(true);
 	});
 
 	it("resets the accumulation window once it fully elapses", async () => {
@@ -97,13 +100,14 @@ describe("RateLimiterDO — per-username lockout (atomic)", () => {
 		const base = 1_700_000_000_000;
 		const clock = vi.spyOn(Date, "now").mockReturnValue(base);
 
-		for (let i = 0; i < MAX_FAILED_ATTEMPTS - 1; i++) await recordFailedAttempt(ns, "erin");
-		expect((await checkLockout(ns, "erin")).locked).toBe(false);
+		for (let i = 0; i < MAX_FAILED_ATTEMPTS - 1; i++) {
+			expect((await admitLoginAttempt(ns, "erin")).admitted).toBe(true);
+		}
 
-		// Jump past the window: the next failure starts a fresh count of 1, not the 5th.
+		// Jump past the window: the next attempt starts a fresh count of 1, not the
+		// MAX_FAILED_ATTEMPTS-th — if the window hadn't reset, this would trip the lock.
 		clock.mockReturnValue(base + LOCKOUT_WINDOW_MS + 1);
-		await recordFailedAttempt(ns, "erin");
-		expect((await checkLockout(ns, "erin")).locked).toBe(false);
+		expect((await admitLoginAttempt(ns, "erin")).admitted).toBe(true);
 	});
 
 	it("a lock expires once its window passes", async () => {
@@ -111,10 +115,10 @@ describe("RateLimiterDO — per-username lockout (atomic)", () => {
 		const base = 1_700_000_000_000;
 		const clock = vi.spyOn(Date, "now").mockReturnValue(base);
 
-		for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) await recordFailedAttempt(ns, "erin");
-		expect((await checkLockout(ns, "erin")).locked).toBe(true);
+		for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++) await admitLoginAttempt(ns, "erin");
+		expect((await admitLoginAttempt(ns, "erin")).admitted).toBe(false);
 
 		clock.mockReturnValue(base + LOCKOUT_WINDOW_MS + 1);
-		expect((await checkLockout(ns, "erin")).locked).toBe(false);
+		expect((await admitLoginAttempt(ns, "erin")).admitted).toBe(true);
 	});
 });
