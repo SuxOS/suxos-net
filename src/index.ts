@@ -6,6 +6,7 @@ import { askDemoQuestion, type QaFormat } from "./demo/demoQa";
 import { buildDemoFlagsView } from "./demo/demoFlags";
 import { buildDemoHighlightsView } from "./demo/demoHighlights";
 import { DEMO_CSS, DEMO_HTML, DEMO_JS } from "./frontend/demoFrontend";
+import { ADMIN_CSS, ADMIN_HTML, ADMIN_JS } from "./frontend/adminFrontend";
 import {
 	handleAdminCreateAccount,
 	handleAdminResetPassword,
@@ -335,6 +336,28 @@ function handleDemoAppJs(request: Request): Response {
 	return withFrontendSecurityHeaders(new Response(DEMO_JS), "text/javascript; charset=utf-8");
 }
 
+// --- /admin frontend (#90): a static shell over the operator-only /admin/* JSON
+// APIs (account provisioning/reset/revoke, reference curation, audit-log read).
+// The page itself carries no server-side session — the operator bearer token is
+// entered client-side and sent as `Authorization: Bearer` on every /admin/* fetch,
+// same gate (assertOperator) every one of those routes already enforces. Additive
+// only, same pattern as /demo above.
+
+function handleAdminPage(request: Request): Response {
+	if (request.method !== "GET") return methodNotAllowed("GET");
+	return withFrontendSecurityHeaders(new Response(ADMIN_HTML), "text/html; charset=utf-8");
+}
+
+function handleAdminConsoleCss(request: Request): Response {
+	if (request.method !== "GET") return methodNotAllowed("GET");
+	return withFrontendSecurityHeaders(new Response(ADMIN_CSS), "text/css; charset=utf-8");
+}
+
+function handleAdminConsoleJs(request: Request): Response {
+	if (request.method !== "GET") return methodNotAllowed("GET");
+	return withFrontendSecurityHeaders(new Response(ADMIN_JS), "text/javascript; charset=utf-8");
+}
+
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		assertStagingAccess(env);
@@ -389,6 +412,13 @@ export default {
 		}
 		if (url.pathname === "/admin/references/update") return withSecurityHeaders(await handleUpdateReference(request, env));
 		if (url.pathname === "/admin/references/delete") return withSecurityHeaders(await handleDeleteReference(request, env));
+
+		// --- Operator admin console UI (#90): static shell, not gated here — each
+		// /admin/* API call it makes carries its own bearer token and is gated by
+		// assertOperator inside that handler, same as a hand-crafted curl request.
+		if (url.pathname === "/admin" || url.pathname === "/admin/") return handleAdminPage(request);
+		if (url.pathname === "/admin/console.css") return handleAdminConsoleCss(request);
+		if (url.pathname === "/admin/console.js") return handleAdminConsoleJs(request);
 
 		return withSecurityHeaders(new Response("not found", { status: 404 }));
 	},
