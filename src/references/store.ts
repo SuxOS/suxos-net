@@ -12,7 +12,18 @@
  * pipeline (src/review.ts) may use to source `TrustedReference[]` for
  * `flagAgainstReferences` — see the runtime guard there. Single-curator is fine for
  * now (#19 scope): `curator` is a free-text field, not tied to a per-curator login.
+ *
+ * createReference/updateReference are routed through RateLimiterDO's atomic "kvMerge"
+ * op (#84's fix reused here per #95) rather than a plain kv.get-then-put: KV has no
+ * compare-and-swap, so two concurrent creates for the same new id could both read
+ * "not found" and each write, silently letting the second clobber the first with no
+ * 409 ever surfacing; two concurrent updates could each merge their patch over a stale
+ * read and one write would discard the other's change. Same shape as
+ * src/auth/store.ts's createAccount/resetPassword. deleteReference stays a plain
+ * read-then-delete — a double-delete is idempotent, so there's no lost-update risk.
  */
+
+import { atomicKvMerge } from "../auth/rateLimiter";
 
 export interface CuratedReference {
 	id: string;
@@ -54,12 +65,10 @@ export async function getReference(kv: KVNamespace, id: string): Promise<Curated
 
 export async function createReference(
 	kv: KVNamespace,
+	rateLimiter: DurableObjectNamespace,
 	input: CreateReferenceInput,
 	now: Date = new Date(),
 ): Promise<CreateReferenceResult> {
-	const existing = await getReference(kv, input.id);
-	if (existing) return { ok: false, error: "reference already exists" };
-
 	const reference: CuratedReference = {
 		id: input.id,
 		text: input.text,
@@ -69,7 +78,8 @@ export async function createReference(
 		dateAdded: now.toISOString(),
 		scopeOfApplicability: input.scopeOfApplicability,
 	};
-	await kv.put(referenceKey(reference.id), JSON.stringify(reference));
+	const result = await atomicKvMerge(rateLimiter, referenceKey(reference.id), { ...reference }, { requireExisting: false });
+	if (!result.ok) return { ok: false, error: "reference already exists" };
 	return { ok: true, reference };
 }
 
@@ -84,12 +94,17 @@ export interface UpdateReferenceInput {
 export type UpdateReferenceResult = { ok: true; reference: CuratedReference } | { ok: false; error: string };
 
 /** Edits an existing curated reference. `dateAdded` is never touched by an update. */
-export async function updateReference(kv: KVNamespace, id: string, patch: UpdateReferenceInput): Promise<UpdateReferenceResult> {
-	const existing = await getReference(kv, id);
-	if (!existing) return { ok: false, error: "reference not found" };
+export async function updateReference(
+	kv: KVNamespace,
+	rateLimiter: DurableObjectNamespace,
+	id: string,
+	patch: UpdateReferenceInput,
+): Promise<UpdateReferenceResult> {
+	const result = await atomicKvMerge(rateLimiter, referenceKey(id), { ...patch }, { requireExisting: true });
+	if (!result.ok) return { ok: false, error: "reference not found" };
 
-	const updated: CuratedReference = { ...existing, ...patch };
-	await kv.put(referenceKey(id), JSON.stringify(updated));
+	const updated = await getReference(kv, id);
+	if (!updated) return { ok: false, error: "reference not found" };
 	return { ok: true, reference: updated };
 }
 
