@@ -733,6 +733,31 @@ describe("recipient auth (#18)", () => {
 		});
 	});
 
+	describe("GET /admin/accounts (operator-only list, #96)", () => {
+		it("rejects with no operator token (401)", async () => {
+			const res = await call("/admin/accounts");
+			expect(res.status).toBe(401);
+		});
+
+		it("lists a created account without leaking its password hash", async () => {
+			await call("/admin/accounts", adminBody({ username: "nora", password: "operator-set-password-1" }));
+			const res = await call("/admin/accounts", { headers: { Authorization: `Bearer ${OPERATOR_TOKEN}` } });
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as { accounts: Array<Record<string, unknown>> };
+			const nora = body.accounts.find((account) => account.username === "nora");
+			expect(nora).toBeDefined();
+			expect(nora).toMatchObject({ username: "nora", sessionEpoch: 0 });
+			expect(typeof nora?.createdAt).toBe("string");
+			expect(nora).not.toHaveProperty("passwordHash");
+		});
+
+		it("returns 405 for a non-GET, non-POST method", async () => {
+			const res = await call("/admin/accounts", { method: "DELETE", headers: { Authorization: `Bearer ${OPERATOR_TOKEN}` } });
+			expect(res.status).toBe(405);
+			expect(res.headers.get("Allow")).toBe("GET, POST");
+		});
+	});
+
 	describe("POST /login", () => {
 		it("logs in with correct credentials and sets an HttpOnly Secure SameSite=Strict cookie", async () => {
 			await call("/admin/accounts", adminBody({ username: "carol", password: "a-real-password-123" }));

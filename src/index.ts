@@ -9,6 +9,7 @@ import { DEMO_CSS, DEMO_HTML, DEMO_JS } from "./frontend/demoFrontend";
 import { ADMIN_CSS, ADMIN_HTML, ADMIN_JS } from "./frontend/adminFrontend";
 import {
 	handleAdminCreateAccount,
+	handleAdminListAccounts,
 	handleAdminResetPassword,
 	handleAdminRevokeSessions,
 	handleLogin,
@@ -392,7 +393,11 @@ export default {
 		// operator bearer token (OPERATOR_TOKEN) and fails closed if it is unset, so
 		// these routes are NOT exposed on a bare `*.workers.dev` deploy even though
 		// no Cloudflare Access edge fronts this staging Worker yet.
-		if (url.pathname === "/admin/accounts") return withSecurityHeaders(await handleAdminCreateAccount(request, env));
+		if (url.pathname === "/admin/accounts") {
+			if (request.method === "GET") return withSecurityHeaders(await handleAdminListAccounts(request, env));
+			if (request.method === "POST") return withSecurityHeaders(await handleAdminCreateAccount(request, env));
+			return withSecurityHeaders(methodNotAllowed("GET, POST"));
+		}
 		if (url.pathname === "/admin/accounts/reset") return withSecurityHeaders(await handleAdminResetPassword(request, env));
 		// Force-logout a recipient without touching their password (#81) — bumps
 		// sessionEpoch so every already-issued session token for them stops verifying.

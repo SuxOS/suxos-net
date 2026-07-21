@@ -40,6 +40,43 @@ export async function getAccount(kv: KVNamespace, username: string): Promise<Acc
 	return JSON.parse(raw) as Account;
 }
 
+export interface AccountSummary {
+	username: string;
+	createdAt: string;
+	sessionEpoch: number;
+}
+
+export interface ListAccountsResult {
+	accounts: AccountSummary[];
+	cursor: string | null;
+}
+
+// Same bound as listReferences (src/references/store.ts) and listAuditLog
+// (src/audit/log.ts) — one list call's KV reads stay capped regardless of caller-supplied limit.
+const MAX_LIST_LIMIT = 200;
+
+/**
+ * Operator-only: lists accounts (#96), never the password hash — just enough for an
+ * operator to find a username to reset/revoke without already knowing it from
+ * outside the system. Same kv.list cursor-pagination shape as listReferences.
+ */
+export async function listAccounts(kv: KVNamespace, limit = MAX_LIST_LIMIT, cursor?: string): Promise<ListAccountsResult> {
+	const boundedLimit = Math.min(Math.max(1, limit), MAX_LIST_LIMIT);
+	const page = await kv.list({ prefix: ACCOUNT_KEY_PREFIX, limit: boundedLimit, cursor });
+	const accounts = await Promise.all(
+		page.keys.map(async (key): Promise<AccountSummary | null> => {
+			const raw = await kv.get(key.name);
+			if (!raw) return null;
+			const account = JSON.parse(raw) as Account;
+			return { username: account.username, createdAt: account.createdAt, sessionEpoch: account.sessionEpoch ?? 0 };
+		}),
+	);
+	return {
+		accounts: accounts.filter((account): account is AccountSummary => account !== null),
+		cursor: page.list_complete ? null : (page.cursor ?? null),
+	};
+}
+
 export type CreateAccountResult = { ok: true } | { ok: false; error: string };
 
 /**

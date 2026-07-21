@@ -10,7 +10,7 @@
 import { timingSafeEqual, verifyPasswordConstantTime } from "./crypto";
 import { recipientIdentity } from "./identity";
 import { buildLogoutCookie, buildSessionCookie, createSessionToken, extractSessionToken, verifySessionToken } from "./session";
-import { admitLoginAttempt, clearFailedAttempts, createAccount, getAccount, resetPassword, revokeSessions } from "./store";
+import { admitLoginAttempt, clearFailedAttempts, createAccount, getAccount, listAccounts, resetPassword, revokeSessions } from "./store";
 import { readJsonBodyWithLimit } from "../httpBody";
 
 export interface AuthEnv {
@@ -207,6 +207,23 @@ export async function handleAdminCreateAccount(request: Request, env: AuthEnv): 
 	const result = await createAccount(env.RATE_LIMITER, username, password);
 	if (!result.ok) return errorResponse(409, { error: result.error });
 	return jsonResponse(201, { ok: true, username: username.trim().toLowerCase() });
+}
+
+/**
+ * GET /admin/accounts — operator-only, lists accounts (#96) so an operator has an
+ * in-app way to find a username to reset/revoke without already knowing it. Never
+ * returns the password hash — see AccountSummary in src/auth/store.ts.
+ */
+export async function handleAdminListAccounts(request: Request, env: AuthEnv): Promise<Response> {
+	if (request.method !== "GET") return errorResponse(405, { error: "method not allowed, expected GET" }, { Allow: "GET" });
+
+	const denied = await assertOperator(request, env);
+	if (denied) return denied;
+
+	const url = new URL(request.url);
+	const cursor = url.searchParams.get("cursor") ?? undefined;
+	const result = await listAccounts(env.NAV_CACHE, undefined, cursor);
+	return jsonResponse(200, result);
 }
 
 /** POST /admin/accounts/reset — operator-only direct password reset, no email flow. */
