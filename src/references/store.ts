@@ -14,6 +14,8 @@
  * now (#19 scope): `curator` is a free-text field, not tied to a per-curator login.
  */
 
+import type { TrustedReference } from "../tools/inconsistencyFlagger";
+
 export interface CuratedReference {
 	id: string;
 	/** The curated fact/claim text itself. */
@@ -122,5 +124,15 @@ export async function listReferences(kv: KVNamespace, limit = MAX_LIST_LIMIT, cu
 	return {
 		references: references.filter((reference): reference is CuratedReference => reference !== null),
 		cursor: page.list_complete ? null : (page.cursor ?? null),
+	};
+}
+
+/** Projects a curated reference down to the shape flagAgainstReferences needs. */
+export function toTrustedReference(reference: CuratedReference): TrustedReference {
+	return {
+		id: reference.id,
+		text: reference.text,
+		source: reference.source,
+		...(reference.sourceUrl !== undefined ? { sourceUrl: reference.sourceUrl } : {}),
 	};
 }

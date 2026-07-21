@@ -34,13 +34,18 @@ import {
 import { checkCitationIntegrity, type CitationIntegrityReport } from "./tools/citationIntegrity";
 import { requireSession, unauthorizedResponse, type AuthEnv } from "./auth/routes";
 import { readJsonBodyWithLimit } from "./httpBody";
-import { listReferences, type CuratedReference } from "./references/store";
+import { listReferences, toTrustedReference } from "./references/store";
 
 export interface ReviewResult {
 	selfConsistency: InconsistencyFlag[];
 	groundingSignals: GroundingSignal[];
 	referenceConsistency: ReferenceInconsistencyFlag[];
 	citationIntegrity: CitationIntegrityReport;
+	// Set only when the curated-reference store held more references than fit under
+	// REFERENCE_TEXT_BUDGET_CHARS (#71) — surfaced rather than silently dropping the
+	// overflow, since a reviewer has no other way to know some curated references were
+	// never even considered.
+	referencesTruncated?: true;
 }
 
 /**
@@ -78,8 +83,9 @@ function errorResponse(status: number, body: ApiError, extraHeaders?: HeadersIni
 // realistic single-record review batch, but far short of a request that could pin CPU.
 const MAX_CLAIMS = 200;
 // References are no longer caller-controlled (#19 runtime guard: sourced only from the
-// curated store) — this now bounds how many curated references handleReview loads per
-// request, preserving the same O(claims x references) cost bound as before.
+// curated store). listReferences() pages at up to 200 keys per KV list() call, but
+// handleReview loops across ALL pages (#71) rather than reading just the first one, so
+// this now bounds only the per-page KV read size, not the total reference count.
 const MAX_REFERENCES = 200;
 // tokenize()/matchesAnyMarker() in inconsistencyFlagger.ts run several regexes over
 // every claim/reference text — a small array of huge strings still costs real CPU/memory
@@ -88,6 +94,12 @@ const MAX_TEXT_LENGTH = 4000;
 const MAX_ID_LENGTH = 200;
 const MAX_CITATIONS_PER_CLAIM = 50;
 const MAX_CITATION_ID_LENGTH = 200;
+// Bounds the O(claims x references) pairwise-check cost (#9) by total curated-reference
+// TEXT VOLUME rather than a fixed reference count (#71) — a fixed count silently stops
+// checking against real curated content once a human curator grows the store past it,
+// with no error or indication anything was skipped. This budget is deliberately the
+// same order of magnitude as MAX_REFERENCES * MAX_TEXT_LENGTH previously implied.
+const REFERENCE_TEXT_BUDGET_CHARS = MAX_REFERENCES * MAX_TEXT_LENGTH;
 
 // Pre-parse body-size guard (#63): computed from the caps above (with headroom for
 // JSON punctuation/keys) rather than picked as a separate magic number, so it never
@@ -95,14 +107,39 @@ const MAX_CITATION_ID_LENGTH = 200;
 // longer part of the request body, so this only needs to cover `claims`.
 const MAX_REVIEW_BODY_BYTES = MAX_CLAIMS * (MAX_ID_LENGTH + MAX_TEXT_LENGTH + MAX_CITATIONS_PER_CLAIM * MAX_CITATION_ID_LENGTH + 200);
 
-/** Projects a curated reference down to the shape flagAgainstReferences needs. */
-function toTrustedReference(reference: CuratedReference): TrustedReference {
-	return {
-		id: reference.id,
-		text: reference.text,
-		source: reference.source,
-		...(reference.sourceUrl !== undefined ? { sourceUrl: reference.sourceUrl } : {}),
-	};
+interface LoadedReferences {
+	references: TrustedReference[];
+	truncated: boolean;
+}
+
+/**
+ * Pages through the ENTIRE curated-reference store (#71) — not just the first 200-key
+ * page — stopping only once the accumulated reference text volume would exceed
+ * REFERENCE_TEXT_BUDGET_CHARS. This is what makes MAX_REFERENCES a per-page KV read
+ * size rather than a silent ceiling on how many curated references a review considers.
+ */
+export async function loadCuratedReferences(kv: KVNamespace): Promise<LoadedReferences> {
+	const references: TrustedReference[] = [];
+	let budgetUsed = 0;
+	let cursor: string | undefined;
+	let truncated = false;
+
+	do {
+		const page = await listReferences(kv, MAX_REFERENCES, cursor);
+		for (const reference of page.references) {
+			const cost = reference.text.length + reference.source.length;
+			if (budgetUsed + cost > REFERENCE_TEXT_BUDGET_CHARS) {
+				truncated = true;
+				break;
+			}
+			references.push(toTrustedReference(reference));
+			budgetUsed += cost;
+		}
+		if (truncated) break;
+		cursor = page.cursor ?? undefined;
+	} while (cursor);
+
+	return { references, truncated };
 }
 
 function isNonEmptyString(value: unknown, maxLength: number): value is string {
@@ -223,8 +260,8 @@ export async function handleReview(request: Request, env: AuthEnv): Promise<Resp
 	// #19 runtime guard: the ONLY source of TrustedReference[] fed into runReview is
 	// this curated-store read — never the request body (rejected above) and never a
 	// runtime LLM/open-knowledge call.
-	const { references: curatedReferences } = await listReferences(env.NAV_CACHE, MAX_REFERENCES);
-	const references = curatedReferences.map(toTrustedReference);
+	const { references, truncated } = await loadCuratedReferences(env.NAV_CACHE);
 
-	return Response.json(runReview(result.claims, references));
+	const reviewResult = runReview(result.claims, references);
+	return Response.json(truncated ? { ...reviewResult, referencesTruncated: true } : reviewResult);
 }

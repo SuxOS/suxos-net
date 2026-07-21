@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { runReview } from "./review";
+import { loadCuratedReferences, runReview } from "./review";
 import * as inconsistencyFlagger from "./tools/inconsistencyFlagger";
 import type { Claim, TrustedReference } from "./tools/inconsistencyFlagger";
+import { createMemoryKv } from "./test/kvMock";
+import { createReference } from "./references/store";
 
 // Clearly-synthetic fixtures — not real content, not real people.
 const CONFLICTING_PAIR: Claim[] = [
@@ -54,5 +56,41 @@ describe("runReview", () => {
 			expect(flag.confidence).toBeLessThan(1);
 			for (const word of forbidden) expect(flag.note.toLowerCase().includes(word)).toBe(false);
 		}
+	});
+});
+
+describe("loadCuratedReferences (#71)", () => {
+	it("returns every curated reference and truncated:false when well under the text budget", async () => {
+		const kv = createMemoryKv();
+		await createReference(kv, {
+			id: "ref-a",
+			text: "Fictional Compound Gamma has a demo interaction with fictional Compound Delta.",
+			source: "SYNTHETIC-TEST Reference Manual, fictional edition",
+			curator: "test-curator",
+			scopeOfApplicability: "fictional demo persona only",
+		});
+		const { references, truncated } = await loadCuratedReferences(kv);
+		expect(references).toHaveLength(1);
+		expect(truncated).toBe(false);
+	});
+
+	it("stops loading and reports truncated:true once accumulated reference text would exceed the budget", async () => {
+		const kv = createMemoryKv();
+		// Three fictional references whose combined text comfortably exceeds
+		// REFERENCE_TEXT_BUDGET_CHARS (200 * 4000 = 800,000 chars) so the third one
+		// tips the loader over the budget without needing 200+ separate entries.
+		const hugeText = "Fictional synthetic filler text for a demo curated reference. ".repeat(6000); // ~384,000 chars
+		for (const id of ["ref-a", "ref-b", "ref-c"]) {
+			await createReference(kv, {
+				id,
+				text: hugeText,
+				source: "SYNTHETIC-TEST Reference Manual, fictional edition",
+				curator: "test-curator",
+				scopeOfApplicability: "fictional demo persona only",
+			});
+		}
+		const { references, truncated } = await loadCuratedReferences(kv);
+		expect(references.length).toBeLessThan(3);
+		expect(truncated).toBe(true);
 	});
 });
