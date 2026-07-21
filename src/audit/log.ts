@@ -56,6 +56,11 @@ export interface AdminRevokeSessionsAuditDetail {
 	username: string;
 }
 
+export interface SelfRevokeSessionsAuditDetail {
+	kind: "self-revoke-sessions";
+	username: string;
+}
+
 export interface ReferenceCreatedAuditDetail {
 	kind: "reference-created";
 	referenceId: string;
@@ -79,6 +84,7 @@ export type AuditDetail =
 	| AdminCreateAccountAuditDetail
 	| AdminResetPasswordAuditDetail
 	| AdminRevokeSessionsAuditDetail
+	| SelfRevokeSessionsAuditDetail
 	| ReferenceCreatedAuditDetail
 	| ReferenceUpdatedAuditDetail
 	| ReferenceDeletedAuditDetail;

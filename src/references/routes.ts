@@ -186,7 +186,7 @@ export async function handleCreateReference(request: Request, env: ReferencesEnv
 	const parsed = extractCreateInput(parsedBody.body);
 	if ("error" in parsed) return parsed.error;
 
-	const result = await createReference(env.NAV_CACHE, parsed.input);
+	const result = await createReference(env.RATE_LIMITER, env.NAV_CACHE, parsed.input);
 	if (!result.ok) return errorResponse(409, { error: result.error });
 	await appendAuditEntry(env.NAV_CACHE, operatorIdentity(env.ACCESS_STAGING_IDENTITY), {
 		kind: "reference-created",
@@ -207,7 +207,7 @@ export async function handleUpdateReference(request: Request, env: ReferencesEnv
 	const parsed = extractUpdateInput(parsedBody.body);
 	if ("error" in parsed) return parsed.error;
 
-	const result = await updateReference(env.NAV_CACHE, parsed.id, parsed.patch);
+	const result = await updateReference(env.RATE_LIMITER, env.NAV_CACHE, parsed.id, parsed.patch);
 	if (!result.ok) return errorResponse(404, { error: result.error });
 	await appendAuditEntry(env.NAV_CACHE, operatorIdentity(env.ACCESS_STAGING_IDENTITY), {
 		kind: "reference-updated",

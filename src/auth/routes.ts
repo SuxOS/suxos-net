@@ -308,5 +308,9 @@ export async function handleLogoutEverywhere(request: Request, env: AuthEnv): Pr
 
 	const result = await revokeSessions(env.RATE_LIMITER, username);
 	if (!result.ok) return errorResponse(404, { error: result.error });
+	await appendAuditEntry(env.NAV_CACHE, recipientIdentity(username), {
+		kind: "self-revoke-sessions",
+		username,
+	});
 	return jsonResponse(200, { ok: true }, { "Set-Cookie": buildLogoutCookie() });
 }

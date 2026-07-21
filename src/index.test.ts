@@ -622,6 +622,19 @@ describe("access audit log (#20)", () => {
 		expect(JSON.stringify(reset?.detail)).not.toContain("brand-new-password-1");
 	});
 
+	it("records recipient self-service /logout-everywhere with the recipient identity (#101)", async () => {
+		await call("/admin/accounts", adminBody({ username: "louise", password: "original-password-1" }));
+		const loginRes = await call("/login", jsonBody({ username: "louise", password: "original-password-1" }));
+		const cookie = loginRes.headers.get("set-cookie") ?? "";
+
+		await call("/logout-everywhere", { method: "POST", headers: { Cookie: cookie } });
+
+		const entries = await latestAuditEntries();
+		const revoked = entries.find((e) => e.detail.kind === "self-revoke-sessions");
+		expect(revoked?.identity).toEqual({ kind: "recipient-username", username: "louise" });
+		expect(revoked?.detail).toEqual({ kind: "self-revoke-sessions", username: "louise" });
+	});
+
 	describe("GET /admin/audit-log (operator-only, read-only)", () => {
 		it("rejects with no operator token (401)", async () => {
 			const res = await call("/admin/audit-log");

@@ -3,6 +3,7 @@ import { loadCuratedReferences, runReview } from "./review";
 import * as inconsistencyFlagger from "./tools/inconsistencyFlagger";
 import type { Claim, TrustedReference } from "./tools/inconsistencyFlagger";
 import { createMemoryKv } from "./test/kvMock";
+import { createRateLimiterNamespace } from "./test/doMock";
 import { createReference } from "./references/store";
 
 // Clearly-synthetic fixtures — not real content, not real people.
@@ -62,7 +63,8 @@ describe("runReview", () => {
 describe("loadCuratedReferences (#71)", () => {
 	it("returns every curated reference and truncated:false when well under the text budget", async () => {
 		const kv = createMemoryKv();
-		await createReference(kv, {
+		const rateLimiter = createRateLimiterNamespace(kv);
+		await createReference(rateLimiter, kv, {
 			id: "ref-a",
 			text: "Fictional Compound Gamma has a demo interaction with fictional Compound Delta.",
 			source: "SYNTHETIC-TEST Reference Manual, fictional edition",
@@ -76,12 +78,13 @@ describe("loadCuratedReferences (#71)", () => {
 
 	it("stops loading and reports truncated:true once accumulated reference text would exceed the budget", async () => {
 		const kv = createMemoryKv();
+		const rateLimiter = createRateLimiterNamespace(kv);
 		// Three fictional references whose combined text comfortably exceeds
 		// REFERENCE_TEXT_BUDGET_CHARS (200 * 4000 = 800,000 chars) so the third one
 		// tips the loader over the budget without needing 200+ separate entries.
 		const hugeText = "Fictional synthetic filler text for a demo curated reference. ".repeat(6000); // ~384,000 chars
 		for (const id of ["ref-a", "ref-b", "ref-c"]) {
-			await createReference(kv, {
+			await createReference(rateLimiter, kv, {
 				id,
 				text: hugeText,
 				source: "SYNTHETIC-TEST Reference Manual, fictional edition",
