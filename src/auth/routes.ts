@@ -8,10 +8,11 @@
  */
 
 import { timingSafeEqual, verifyPasswordConstantTime } from "./crypto";
-import { recipientIdentity } from "./identity";
+import { operatorIdentity, recipientIdentity } from "./identity";
 import { buildLogoutCookie, buildSessionCookie, createSessionToken, extractSessionToken, verifySessionToken } from "./session";
 import { admitLoginAttempt, clearFailedAttempts, createAccount, getAccount, resetPassword, revokeSessions } from "./store";
 import { readJsonBodyWithLimit } from "../httpBody";
+import { appendAuditEntry } from "../audit/log";
 
 export interface AuthEnv {
 	NAV_CACHE: KVNamespace;
@@ -24,6 +25,9 @@ export interface AuthEnv {
 	// `wrangler secret put OPERATOR_TOKEN` — never a `vars` entry, never committed.
 	// When unset, assertOperator fails closed (every admin request → 401).
 	OPERATOR_TOKEN: string;
+	// Stand-in operator identity for audit-log attribution (#97) until real
+	// Cloudflare Access lands — see src/auth/identity.ts's operatorIdentity.
+	ACCESS_STAGING_IDENTITY: string;
 }
 
 interface ApiError {
@@ -105,11 +109,13 @@ export async function handleLogin(request: Request, env: AuthEnv): Promise<Respo
 	if (!account || !valid) {
 		// The attempt was already counted atomically at admission above — no separate
 		// record step (that split was the race). A wrong guess simply falls through.
+		await appendAuditEntry(env.NAV_CACHE, recipientIdentity(username), { kind: "login-attempt", success: false });
 		return genericFailure();
 	}
 
 	await clearFailedAttempts(env.RATE_LIMITER, username);
 	const token = await createSessionToken(account.username, env.SESSION_SECRET, account.sessionEpoch ?? 0);
+	await appendAuditEntry(env.NAV_CACHE, recipientIdentity(account.username), { kind: "login-attempt", success: true });
 	return jsonResponse(
 		200,
 		{ ok: true, username: account.username, identity: recipientIdentity(account.username) },
@@ -206,7 +212,12 @@ export async function handleAdminCreateAccount(request: Request, env: AuthEnv): 
 
 	const result = await createAccount(env.RATE_LIMITER, username, password);
 	if (!result.ok) return errorResponse(409, { error: result.error });
-	return jsonResponse(201, { ok: true, username: username.trim().toLowerCase() });
+	const normalizedUsername = username.trim().toLowerCase();
+	await appendAuditEntry(env.NAV_CACHE, operatorIdentity(env.ACCESS_STAGING_IDENTITY), {
+		kind: "admin-create-account",
+		username: normalizedUsername,
+	});
+	return jsonResponse(201, { ok: true, username: normalizedUsername });
 }
 
 /** POST /admin/accounts/reset — operator-only direct password reset, no email flow. */
@@ -224,6 +235,10 @@ export async function handleAdminResetPassword(request: Request, env: AuthEnv): 
 
 	const result = await resetPassword(env.RATE_LIMITER, username, password);
 	if (!result.ok) return errorResponse(404, { error: result.error });
+	await appendAuditEntry(env.NAV_CACHE, operatorIdentity(env.ACCESS_STAGING_IDENTITY), {
+		kind: "admin-reset-password",
+		username: username.trim().toLowerCase(),
+	});
 	return jsonResponse(200, { ok: true });
 }
 
@@ -251,6 +266,10 @@ export async function handleAdminRevokeSessions(request: Request, env: AuthEnv):
 
 	const result = await revokeSessions(env.RATE_LIMITER, username);
 	if (!result.ok) return errorResponse(404, { error: result.error });
+	await appendAuditEntry(env.NAV_CACHE, operatorIdentity(env.ACCESS_STAGING_IDENTITY), {
+		kind: "admin-revoke-sessions",
+		username: username.trim().toLowerCase(),
+	});
 	return jsonResponse(200, { ok: true });
 }
 

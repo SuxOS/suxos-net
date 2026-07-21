@@ -7,6 +7,8 @@
  */
 
 import { assertOperator, type AuthEnv } from "../auth/routes";
+import { operatorIdentity } from "../auth/identity";
+import { appendAuditEntry } from "../audit/log";
 import { readJsonBodyWithLimit } from "../httpBody";
 import {
 	createReference,
@@ -186,6 +188,10 @@ export async function handleCreateReference(request: Request, env: ReferencesEnv
 
 	const result = await createReference(env.NAV_CACHE, parsed.input);
 	if (!result.ok) return errorResponse(409, { error: result.error });
+	await appendAuditEntry(env.NAV_CACHE, operatorIdentity(env.ACCESS_STAGING_IDENTITY), {
+		kind: "reference-created",
+		referenceId: result.reference.id,
+	});
 	return jsonResponse(201, result.reference);
 }
 
@@ -203,6 +209,11 @@ export async function handleUpdateReference(request: Request, env: ReferencesEnv
 
 	const result = await updateReference(env.NAV_CACHE, parsed.id, parsed.patch);
 	if (!result.ok) return errorResponse(404, { error: result.error });
+	await appendAuditEntry(env.NAV_CACHE, operatorIdentity(env.ACCESS_STAGING_IDENTITY), {
+		kind: "reference-updated",
+		referenceId: parsed.id,
+		fields: Object.keys(parsed.patch),
+	});
 	return jsonResponse(200, result.reference);
 }
 
@@ -222,5 +233,9 @@ export async function handleDeleteReference(request: Request, env: ReferencesEnv
 
 	const result = await deleteReference(env.NAV_CACHE, id);
 	if (!result.ok) return errorResponse(404, { error: result.error });
+	await appendAuditEntry(env.NAV_CACHE, operatorIdentity(env.ACCESS_STAGING_IDENTITY), {
+		kind: "reference-deleted",
+		referenceId: id,
+	});
 	return jsonResponse(200, { ok: true });
 }

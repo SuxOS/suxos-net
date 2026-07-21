@@ -580,6 +580,48 @@ describe("access audit log (#20)", () => {
 		expect(qaEntry?.detail).not.toHaveProperty("answer");
 	});
 
+	async function latestAuditEntries(): Promise<{ identity: { kind: string; email?: string; username?: string }; detail: Record<string, unknown> }[]> {
+		const auditRes = await call("/admin/audit-log", { headers: { Authorization: `Bearer ${OPERATOR_TOKEN}` } });
+		const { entries } = (await auditRes.json()) as {
+			entries: { identity: { kind: string; email?: string; username?: string }; detail: Record<string, unknown> }[];
+		};
+		return entries;
+	}
+
+	it("records a successful login attempt with the recipient identity (#97)", async () => {
+		await createAccountAndLogin("audrey", "a-real-password-1");
+		const entries = await latestAuditEntries();
+		const entry = entries.find((e) => e.detail.kind === "login-attempt" && e.detail.success === true);
+		expect(entry?.identity).toEqual({ kind: "recipient-username", username: "audrey" });
+	});
+
+	it("records a failed login attempt, never the password (#97)", async () => {
+		await call("/admin/accounts", adminBody({ username: "audrey2", password: "correct-password-here" }));
+		await call("/login", jsonBody({ username: "audrey2", password: "wrong-password-here" }));
+
+		const entries = await latestAuditEntries();
+		const entry = entries.find((e) => e.detail.kind === "login-attempt" && e.detail.success === false);
+		expect(entry?.identity).toEqual({ kind: "recipient-username", username: "audrey2" });
+		expect(JSON.stringify(entry?.detail)).not.toContain("wrong-password-here");
+	});
+
+	it("records admin account create/reset/revoke-sessions with the operator identity, never the password (#97)", async () => {
+		await call("/admin/accounts", adminBody({ username: "petra", password: "original-password-1" }));
+		await call("/admin/accounts/reset", adminBody({ username: "petra", password: "brand-new-password-1" }));
+		await call("/admin/accounts/revoke-sessions", adminBody({ username: "petra" }));
+
+		const entries = await latestAuditEntries();
+		const created = entries.find((e) => e.detail.kind === "admin-create-account");
+		const reset = entries.find((e) => e.detail.kind === "admin-reset-password");
+		const revoked = entries.find((e) => e.detail.kind === "admin-revoke-sessions");
+
+		expect(created?.identity).toEqual({ kind: "operator-access-email", email: ENV.ACCESS_STAGING_IDENTITY });
+		expect(created?.detail).toEqual({ kind: "admin-create-account", username: "petra" });
+		expect(reset?.detail).toEqual({ kind: "admin-reset-password", username: "petra" });
+		expect(revoked?.detail).toEqual({ kind: "admin-revoke-sessions", username: "petra" });
+		expect(JSON.stringify(reset?.detail)).not.toContain("brand-new-password-1");
+	});
+
 	describe("GET /admin/audit-log (operator-only, read-only)", () => {
 		it("rejects with no operator token (401)", async () => {
 			const res = await call("/admin/audit-log");
@@ -689,6 +731,33 @@ describe("trusted-reference curation (#19)", () => {
 		it("returns 404 deleting a reference that does not exist", async () => {
 			const res = await call("/admin/references/delete", adminBody({ id: "no-such-ref" }));
 			expect(res.status).toBe(404);
+		});
+	});
+
+	describe("audit trail for reference curation (#97)", () => {
+		async function auditEntries(): Promise<{ identity: { kind: string; email?: string }; detail: Record<string, unknown> }[]> {
+			const auditRes = await call("/admin/audit-log", { headers: { Authorization: `Bearer ${OPERATOR_TOKEN}` } });
+			const { entries } = (await auditRes.json()) as {
+				entries: { identity: { kind: string; email?: string }; detail: Record<string, unknown> }[];
+			};
+			return entries;
+		}
+
+		it("records create/update/delete with the operator identity and the reference id, never its text", async () => {
+			await call("/admin/references", adminBody(FICTIONAL_REFERENCE));
+			await call("/admin/references/update", adminBody({ id: FICTIONAL_REFERENCE.id, text: "Updated fictional text." }));
+			await call("/admin/references/delete", adminBody({ id: FICTIONAL_REFERENCE.id }));
+
+			const entries = await auditEntries();
+			const created = entries.find((e) => e.detail.kind === "reference-created");
+			const updated = entries.find((e) => e.detail.kind === "reference-updated");
+			const deleted = entries.find((e) => e.detail.kind === "reference-deleted");
+
+			expect(created?.identity).toEqual({ kind: "operator-access-email", email: ENV.ACCESS_STAGING_IDENTITY });
+			expect(created?.detail).toEqual({ kind: "reference-created", referenceId: FICTIONAL_REFERENCE.id });
+			expect(updated?.detail).toEqual({ kind: "reference-updated", referenceId: FICTIONAL_REFERENCE.id, fields: ["text"] });
+			expect(deleted?.detail).toEqual({ kind: "reference-deleted", referenceId: FICTIONAL_REFERENCE.id });
+			expect(JSON.stringify(updated?.detail)).not.toContain("Updated fictional text.");
 		});
 	});
 });

@@ -36,7 +36,52 @@ export interface QaAuditDetail {
 	status: string;
 }
 
-export type AuditDetail = NavigatorAuditDetail | QaAuditDetail;
+export interface LoginAttemptAuditDetail {
+	kind: "login-attempt";
+	success: boolean;
+}
+
+export interface AdminCreateAccountAuditDetail {
+	kind: "admin-create-account";
+	username: string;
+}
+
+export interface AdminResetPasswordAuditDetail {
+	kind: "admin-reset-password";
+	username: string;
+}
+
+export interface AdminRevokeSessionsAuditDetail {
+	kind: "admin-revoke-sessions";
+	username: string;
+}
+
+export interface ReferenceCreatedAuditDetail {
+	kind: "reference-created";
+	referenceId: string;
+}
+
+export interface ReferenceUpdatedAuditDetail {
+	kind: "reference-updated";
+	referenceId: string;
+	fields: string[];
+}
+
+export interface ReferenceDeletedAuditDetail {
+	kind: "reference-deleted";
+	referenceId: string;
+}
+
+export type AuditDetail =
+	| NavigatorAuditDetail
+	| QaAuditDetail
+	| LoginAttemptAuditDetail
+	| AdminCreateAccountAuditDetail
+	| AdminResetPasswordAuditDetail
+	| AdminRevokeSessionsAuditDetail
+	| ReferenceCreatedAuditDetail
+	| ReferenceUpdatedAuditDetail
+	| ReferenceDeletedAuditDetail;
 
 export interface AuditLogEntry {
 	identity: AuditIdentity;
