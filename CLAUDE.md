@@ -77,3 +77,35 @@ ls-tree -r main --name-only` shows no `src/references/` directory at all, even t
 clusters above, just caught earlier this time: don't infer a dependency has landed from its label or from
 another issue's prose — `git ls-tree`/grep `main` for the actual file before building on top of it. If it's
 not there, drop and release the claim; the foundation issue may still be mid-build by a concurrent run.
+
+## #30/#31 (real QA retrieval) are already built — on an unmerged draft PR, not on `main`
+
+Verified 2026-07-19: `src/qa.ts` on `main` is still the stub (`status: "not_implemented"`), but draft PR
+#34 (`feat/real-qa-retrieval`, mergeable state `CONFLICTING`) already implements both #30 (Vectorize
+embedding pipeline, `src/embeddings/*`) and #31 (real `/api/qa` synthesis) with passing tests. This is the
+same shape as the `#35`/`src/review.ts` situation above: a batch pipeline can only open new PRs against
+`main`, it cannot push fix/rebase commits onto another open PR's branch, so #30/#31 are not buildable here
+until a human merges/rebases #34. #32 (real frontend route) depends on #30/#31 landing plus suxvault
+access, so it's blocked transitively. Before re-attempting #30/#31/#32, check whether PR #34 has merged.
+
+## `SuxOS/.github` (the reusable-workflow repo) is also unreachable from the builder token
+
+Verified 2026-07-19 (issue #67 triage): `gh api repos/SuxOS/.github` 404s, same as the `suxvault`
+unreachability noted above. `.github/workflows/issue-build.yml` in this repo just does `uses:
+SuxOS/.github/.github/workflows/issue-build.yml@main` — the actual logic that generates a batch PR's body
+(including its `Closes #N` list, the bug flagged in #67) lives in that unreachable repo, not in this one.
+Any issue whose fix requires editing that reusable workflow is not buildable here for the same reason as
+suxvault-dependent issues: drop it as blocked on repo access, don't try to "fix" it by editing something in
+this repo that only calls the real logic.
+
+## `RateLimiterDO` (`src/auth/rateLimiter.ts`) is also the atomic-KV-write primitive for `src/auth/store.ts`
+
+Added 2026-07-19 (issue #84): Cloudflare KV has no compare-and-swap, so any `kv.get`-then-`kv.put` on the
+same key racing another writer for that key can silently drop one side's change. `createAccount`,
+`resetPassword`, and `revokeSessions` in `src/auth/store.ts` all route their account-record writes through
+`RateLimiterDO`'s `"kvMerge"` op (`atomicKvMerge` in `rateLimiter.ts`) instead of writing KV directly — the
+DO's per-id input gate serialises the whole read-modify-write, closing the race, and this reuses the
+already-provisioned `RATE_LIMITER` binding rather than needing a new Durable Object class + wrangler
+migration. If you add another mutating field to the `Account` record (or any other KV record that can be
+written by more than one caller), reuse `atomicKvMerge` rather than writing a fresh `kv.get`/`kv.put` pair —
+that plain pattern is exactly the bug #84 fixed.

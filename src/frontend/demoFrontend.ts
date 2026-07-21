@@ -55,6 +55,10 @@ export const DEMO_HTML = `<!doctype html>
     <form id="qa-form" class="qa-form">
       <label for="qa-input">Ask a question about the record</label>
       <input id="qa-input" type="text" name="question" placeholder="e.g. what happened in March?" autocomplete="off">
+      <label for="qa-format-toggle" class="qa-format-label">
+        <input id="qa-format-toggle" type="checkbox">
+        Haiku mode (compact answers)
+      </label>
       <button type="submit">Ask</button>
     </form>
     <div id="qa-results" class="qa-results" aria-live="polite"></div>
@@ -163,6 +167,8 @@ select, input[type="text"] {
 .qa-form { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
 .qa-form label { flex-basis: 100%; font-size: 0.85rem; color: var(--muted); }
 .qa-form input { flex: 1 1 220px; }
+.qa-format-label { flex-basis: auto !important; display: flex; align-items: center; gap: 0.35rem; }
+.qa-format-label input { flex: 0 0 auto; }
 
 .no-source, .error { color: var(--caution); font-weight: 600; }
 .loading, .empty { color: var(--muted); font-style: italic; }
@@ -198,7 +204,7 @@ select, input[type="text"] {
 export const DEMO_JS = `(function () {
   "use strict";
 
-  var state = { verbosity: "oneline", timeScope: "all" };
+  var state = { verbosity: "oneline", timeScope: "all", qaFormat: "default" };
 
   function el(tag, attrs, children) {
     var node = document.createElement(tag);
@@ -291,7 +297,7 @@ export const DEMO_JS = `(function () {
     fetch("/demo/qa", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: question }),
+      body: JSON.stringify({ question: question, format: state.qaFormat }),
     })
       .then(function (res) {
         return res.json().then(function (data) { return { ok: res.ok, data: data }; });
@@ -473,6 +479,10 @@ export const DEMO_JS = `(function () {
     timeScopeSelect.addEventListener("change", function () {
       state.timeScope = timeScopeSelect.value;
       loadNavigator();
+    });
+
+    document.getElementById("qa-format-toggle").addEventListener("change", function (event) {
+      state.qaFormat = event.target.checked ? "haiku" : "default";
     });
 
     document.getElementById("qa-form").addEventListener("submit", function (event) {

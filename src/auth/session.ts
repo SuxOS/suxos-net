@@ -16,6 +16,7 @@ export const SESSION_DURATION_MS = 24 * 60 * 60 * 1000;
 
 export interface SessionPayload {
 	username: string;
+	epoch: number;
 	expiresAt: number;
 }
 
@@ -43,14 +44,34 @@ async function hmacSha256Hex(secret: string, data: string): Promise<string> {
 }
 
 /**
- * Token shape: `<username>.<expiresAtMs>.<hmacHex>`. The username and expiry are
- * plaintext (not secret — the cookie is HttpOnly so JS can't read it anyway) but the
- * signature over both prevents forging or extending a session without the secret.
+ * Token shape: `<username>.<epoch>.<expiresAtMs>.<hmacHex>`. The username, epoch, and
+ * expiry are plaintext (not secret — the cookie is HttpOnly so JS can't read it
+ * anyway) but the signature over all three prevents forging or extending a session,
+ * or replaying it under a stale epoch, without the secret.
+ *
+ * `epoch` is the account's session generation counter (src/auth/store.ts's
+ * `sessionEpoch`, #81) at the moment this token was minted. requireSession
+ * (src/auth/routes.ts) compares it against the account's CURRENT epoch on every
+ * request; a password reset or an explicit "revoke sessions" admin action bumps the
+ * stored epoch, which instantly invalidates every token minted under an older one —
+ * the primitive this repo had no way to express before (self-contained signed tokens
+ * had no server-side state to revoke).
+ *
+ * Usernames may contain dots (e.g. `jane.doe` — a normal operator choice, see #80),
+ * so parsing can't split on "." and require exactly N parts: that rejected every
+ * dotted username as malformed. Instead parse from the RIGHT — the trailing epoch,
+ * expiry, and signature are always plain digits/hex with no dots — and treat
+ * whatever dot-delimited segments remain, however many there are, as the username.
  */
-export async function createSessionToken(username: string, secret: string, now: number = Date.now()): Promise<string> {
+export async function createSessionToken(
+	username: string,
+	secret: string,
+	epoch: number = 0,
+	now: number = Date.now(),
+): Promise<string> {
 	assertSessionSecret(secret);
 	const expiresAt = now + SESSION_DURATION_MS;
-	const payload = `${username}.${expiresAt}`;
+	const payload = `${username}.${epoch}.${expiresAt}`;
 	const signature = await hmacSha256Hex(secret, payload);
 	return `${payload}.${signature}`;
 }
@@ -64,15 +85,24 @@ export async function verifySessionToken(
 	// the well-known empty key — reject every session instead (suxos-net#35 HIGH).
 	if (!secret) return null;
 
+	// Parse from the right: last segment is the signature, then expiry, then epoch —
+	// everything before that (rejoined with ".") is the username, however many dots it
+	// contains (suxos-net#80). Fewer than 4 total segments means there's no room left
+	// for a non-empty username, so it's malformed.
 	const parts = token.split(".");
-	if (parts.length !== 3) return null;
-	const [username, expiresAtRaw, signatureHex] = parts;
-	if (!username || !expiresAtRaw || !signatureHex) return null;
+	if (parts.length < 4) return null;
+	const signatureHex = parts[parts.length - 1];
+	const expiresAtRaw = parts[parts.length - 2];
+	const epochRaw = parts[parts.length - 3];
+	const username = parts.slice(0, parts.length - 3).join(".");
+	if (!username || !expiresAtRaw || !signatureHex || !epochRaw) return null;
 
 	const expiresAt = Number(expiresAtRaw);
 	if (!Number.isFinite(expiresAt)) return null;
+	const epoch = Number(epochRaw);
+	if (!Number.isFinite(epoch)) return null;
 
-	const expectedSignatureHex = await hmacSha256Hex(secret, `${username}.${expiresAtRaw}`);
+	const expectedSignatureHex = await hmacSha256Hex(secret, `${username}.${epochRaw}.${expiresAtRaw}`);
 
 	let signatureBytes: Uint8Array;
 	let expectedBytes: Uint8Array;
@@ -87,7 +117,7 @@ export async function verifySessionToken(
 
 	if (now > expiresAt) return null;
 
-	return { username, expiresAt };
+	return { username, epoch, expiresAt };
 }
 
 export function buildSessionCookie(token: string): string {

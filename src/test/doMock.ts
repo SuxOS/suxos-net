@@ -15,6 +15,7 @@
  * eviction — only the counter logic and its serialisation contract.
  */
 import { RateLimiterDO } from "../auth/rateLimiter";
+import { createMemoryKv } from "./kvMock";
 
 function createMemoryStorage(): DurableObjectStorage {
 	const store = new Map<string, unknown>();
@@ -36,13 +37,19 @@ interface Instance {
 	tail: Promise<unknown>;
 }
 
-export function createRateLimiterNamespace(): DurableObjectNamespace {
+/**
+ * `kv` backs the "kvMerge" op (#84) — pass the SAME KVNamespace mock as the test's
+ * NAV_CACHE so account-mutation tests observe the DO's writes. Defaults to a fresh,
+ * disconnected mock for the many existing rate-limit-only tests that never touch
+ * "kvMerge" and don't care which KV instance backs it.
+ */
+export function createRateLimiterNamespace(kv: KVNamespace = createMemoryKv()): DurableObjectNamespace {
 	const instances = new Map<string, Instance>();
 	const entryFor = (name: string): Instance => {
 		let entry = instances.get(name);
 		if (!entry) {
 			const state = { storage: createMemoryStorage() } as unknown as DurableObjectState;
-			entry = { inst: new RateLimiterDO(state), tail: Promise.resolve() };
+			entry = { inst: new RateLimiterDO(state, { NAV_CACHE: kv }), tail: Promise.resolve() };
 			instances.set(name, entry);
 		}
 		return entry;

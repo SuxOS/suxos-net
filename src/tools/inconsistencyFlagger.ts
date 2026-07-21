@@ -284,6 +284,12 @@ const REFERENCE_NOTE_TEMPLATE = (claimId: string, referenceId: string, source: s
  * actually about the shared subject. Same "no LLM calls here" constraint as the
  * self-consistency pass — an LLM-assisted variant is separate, future, documented
  * work, not this function.
+ *
+ * Gotcha for fixture authors: the keyword-overlap check has no topic awareness, so two
+ * unrelated claim/reference fixtures that happen to share >=2 generic words (e.g. both
+ * using "fictional" and "interaction" in demo/test copy) plus asymmetric negation will
+ * flag as inconsistent purely by vocabulary coincidence, unrelated to either fixture's
+ * actual content. Give unrelated fixtures distinct, specific vocabulary to avoid this.
  */
 export function flagAgainstReferences(claims: Claim[], references: TrustedReference[]): ReferenceInconsistencyFlag[] {
 	const flags: ReferenceInconsistencyFlag[] = [];

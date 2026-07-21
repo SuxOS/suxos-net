@@ -6,11 +6,14 @@ import { askDemoQuestion, type QaFormat } from "./demo/demoQa";
 import { buildDemoFlagsView } from "./demo/demoFlags";
 import { buildDemoHighlightsView } from "./demo/demoHighlights";
 import { DEMO_CSS, DEMO_HTML, DEMO_JS } from "./frontend/demoFrontend";
+import { ADMIN_CSS, ADMIN_HTML, ADMIN_JS } from "./frontend/adminFrontend";
 import {
 	handleAdminCreateAccount,
 	handleAdminResetPassword,
+	handleAdminRevokeSessions,
 	handleLogin,
 	handleLogout,
+	handleLogoutEverywhere,
 	requireSession,
 	unauthorizedResponse,
 } from "./auth/routes";
@@ -333,6 +336,28 @@ function handleDemoAppJs(request: Request): Response {
 	return withFrontendSecurityHeaders(new Response(DEMO_JS), "text/javascript; charset=utf-8");
 }
 
+// --- /admin frontend (#90): a static shell over the operator-only /admin/* JSON
+// APIs (account provisioning/reset/revoke, reference curation, audit-log read).
+// The page itself carries no server-side session — the operator bearer token is
+// entered client-side and sent as `Authorization: Bearer` on every /admin/* fetch,
+// same gate (assertOperator) every one of those routes already enforces. Additive
+// only, same pattern as /demo above.
+
+function handleAdminPage(request: Request): Response {
+	if (request.method !== "GET") return methodNotAllowed("GET");
+	return withFrontendSecurityHeaders(new Response(ADMIN_HTML), "text/html; charset=utf-8");
+}
+
+function handleAdminConsoleCss(request: Request): Response {
+	if (request.method !== "GET") return methodNotAllowed("GET");
+	return withFrontendSecurityHeaders(new Response(ADMIN_CSS), "text/css; charset=utf-8");
+}
+
+function handleAdminConsoleJs(request: Request): Response {
+	if (request.method !== "GET") return methodNotAllowed("GET");
+	return withFrontendSecurityHeaders(new Response(ADMIN_JS), "text/javascript; charset=utf-8");
+}
+
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		assertStagingAccess(env);
@@ -357,6 +382,9 @@ export default {
 		// --- Recipient auth (#18) ---
 		if (url.pathname === "/login") return withSecurityHeaders(await handleLogin(request, env));
 		if (url.pathname === "/logout") return withSecurityHeaders(await handleLogout(request));
+		// Recipient self-service "log out everywhere" (#83) — requires the caller's own
+		// valid session; invalidates every session token issued for that account.
+		if (url.pathname === "/logout-everywhere") return withSecurityHeaders(await handleLogoutEverywhere(request, env));
 
 		// --- Operator-only admin routes: account provisioning + reset. No self-serve
 		// signup exists anywhere in this Worker — these are the only ways an account
@@ -366,6 +394,9 @@ export default {
 		// no Cloudflare Access edge fronts this staging Worker yet.
 		if (url.pathname === "/admin/accounts") return withSecurityHeaders(await handleAdminCreateAccount(request, env));
 		if (url.pathname === "/admin/accounts/reset") return withSecurityHeaders(await handleAdminResetPassword(request, env));
+		// Force-logout a recipient without touching their password (#81) — bumps
+		// sessionEpoch so every already-issued session token for them stops verifying.
+		if (url.pathname === "/admin/accounts/revoke-sessions") return withSecurityHeaders(await handleAdminRevokeSessions(request, env));
 		// Read-only admin view of the access-audit log (#20).
 		if (url.pathname === "/admin/audit-log") return withSecurityHeaders(await handleAuditLogAdmin(request, env));
 
@@ -381,6 +412,13 @@ export default {
 		}
 		if (url.pathname === "/admin/references/update") return withSecurityHeaders(await handleUpdateReference(request, env));
 		if (url.pathname === "/admin/references/delete") return withSecurityHeaders(await handleDeleteReference(request, env));
+
+		// --- Operator admin console UI (#90): static shell, not gated here — each
+		// /admin/* API call it makes carries its own bearer token and is gated by
+		// assertOperator inside that handler, same as a hand-crafted curl request.
+		if (url.pathname === "/admin" || url.pathname === "/admin/") return handleAdminPage(request);
+		if (url.pathname === "/admin/console.css") return handleAdminConsoleCss(request);
+		if (url.pathname === "/admin/console.js") return handleAdminConsoleJs(request);
 
 		return withSecurityHeaders(new Response("not found", { status: 404 }));
 	},

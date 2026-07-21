@@ -1,5 +1,7 @@
 /**
  * Atomic rate-limit / lockout counters backed by a Durable Object (suxos-net#35).
+ * Also backs atomic KV read-modify-write for account records (suxos-net#84) — see
+ * the "kvMerge" op below.
  *
  * WHY a Durable Object and not KV: Cloudflare KV has NO atomic increment. The
  * previous KV-backed counters did get-then-put, so a burst of concurrent requests
@@ -23,6 +25,17 @@
  * time. A fetch-handler DO needs no such import and is serialised by the exact same
  * input gate, so the atomicity guarantee that closes the TOCTOU is identical. The
  * typed client helpers below keep the Worker's call sites ergonomic and type-safe.
+ *
+ * "kvMerge" reuses this SAME DO/binding (rather than provisioning a second Durable
+ * Object class + migration) to close the account-record TOCTOU flagged in #84:
+ * createAccount/resetPassword/revokeSessions (src/auth/store.ts) used to do a plain
+ * kv.get-then-put on the same account key. Routing that read-modify-write through
+ * one DO fetch call, keyed by the account's own KV key, means the whole
+ * get-mutate-put runs inside a single input-gated turn — concurrent admin actions on
+ * the same account are serialised exactly like the login-lockout counter above,
+ * instead of racing each other in KV directly. The DO reaches KV via `env.NAV_CACHE`,
+ * the same binding the Worker already has (no wrangler.jsonc change needed — DO
+ * classes exported from the Worker's own script receive the Worker's env).
  */
 
 // --- Wire protocol (Worker <-> DO). One POST per operation; body is one of these. ---
@@ -30,14 +43,6 @@
 interface FixedWindowRequest {
 	op: "fixedWindow";
 	limit: number;
-	windowMs: number;
-}
-interface LockoutStatusRequest {
-	op: "lockoutStatus";
-}
-interface LockoutRecordRequest {
-	op: "lockoutRecord";
-	maxAttempts: number;
 	windowMs: number;
 }
 interface LockoutClearRequest {
@@ -48,21 +53,23 @@ interface LockoutAdmitRequest {
 	maxAttempts: number;
 	windowMs: number;
 }
-type RateLimiterRequest =
-	| FixedWindowRequest
-	| LockoutStatusRequest
-	| LockoutRecordRequest
-	| LockoutClearRequest
-	| LockoutAdmitRequest;
-
-export interface LockoutStatus {
-	locked: boolean;
-	retryAfterMs?: number;
+interface KvMergeRequest {
+	op: "kvMerge";
+	kvKey: string;
+	patch: Record<string, unknown>;
+	requireExisting: boolean;
+	bumpField?: string;
 }
+type RateLimiterRequest = FixedWindowRequest | LockoutClearRequest | LockoutAdmitRequest | KvMergeRequest;
 
 export interface LockoutAdmitResult {
 	admitted: boolean;
 	retryAfterMs?: number;
+}
+
+export interface KvMergeResult {
+	ok: boolean;
+	error?: string;
 }
 
 // --- Persisted per-instance state (one instance == one logical key). ---
@@ -89,9 +96,14 @@ const LOCKOUT_SLOT = "lockout";
  */
 export class RateLimiterDO {
 	private readonly storage: DurableObjectStorage;
+	// Optional: only "kvMerge" callers need this. Absent in any environment that
+	// doesn't pass a NAV_CACHE binding (e.g. an older/unrelated Worker embedding this
+	// class) — those simply can't use "kvMerge", every other op is unaffected.
+	private readonly kv?: KVNamespace;
 
-	constructor(ctx: DurableObjectState) {
+	constructor(ctx: DurableObjectState, env?: { NAV_CACHE?: KVNamespace }) {
 		this.storage = ctx.storage;
+		this.kv = env?.NAV_CACHE;
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -99,16 +111,13 @@ export class RateLimiterDO {
 		switch (body.op) {
 			case "fixedWindow":
 				return Response.json(await this.fixedWindow(body.limit, body.windowMs));
-			case "lockoutStatus":
-				return Response.json(await this.lockoutStatus());
-			case "lockoutRecord":
-				await this.lockoutRecord(body.maxAttempts, body.windowMs);
-				return Response.json({ ok: true });
 			case "lockoutClear":
 				await this.storage.delete(LOCKOUT_SLOT);
 				return Response.json({ ok: true });
 			case "lockoutAdmit":
 				return Response.json(await this.lockoutAdmit(body.maxAttempts, body.windowMs));
+			case "kvMerge":
+				return Response.json(await this.kvMerge(body.kvKey, body.patch, body.requireExisting, body.bumpField));
 			default:
 				return Response.json({ error: "unknown op" }, { status: 400 });
 		}
@@ -128,34 +137,6 @@ export class RateLimiterDO {
 		if (state.count >= limit) return { allowed: false };
 		await this.storage.put(FIXED_WINDOW_SLOT, { count: state.count + 1, windowStart: state.windowStart });
 		return { allowed: true };
-	}
-
-	/** Read-only lockout check — mirrors the old checkLockout semantics exactly. */
-	private async lockoutStatus(now: number = Date.now()): Promise<LockoutStatus> {
-		const state = await this.storage.get<LockoutState>(LOCKOUT_SLOT);
-		if (!state) return { locked: false };
-		if (state.lockedUntil && now < state.lockedUntil) {
-			return { locked: true, retryAfterMs: state.lockedUntil - now };
-		}
-		return { locked: false };
-	}
-
-	/**
-	 * Records one failed login attempt — mirrors the old recordFailedAttempt exactly:
-	 * a sliding accumulation window (reset once it fully elapses) and, on reaching
-	 * `maxAttempts`, a lock that runs `windowMs` from the tripping attempt.
-	 */
-	private async lockoutRecord(maxAttempts: number, windowMs: number, now: number = Date.now()): Promise<void> {
-		const existing = await this.storage.get<LockoutState>(LOCKOUT_SLOT);
-		let state: LockoutState = existing ?? { failedAttempts: 0, windowStartedAt: now };
-		if (now - state.windowStartedAt > windowMs) {
-			state = { failedAttempts: 0, windowStartedAt: now };
-		}
-		state.failedAttempts += 1;
-		if (state.failedAttempts >= maxAttempts) {
-			state.lockedUntil = now + windowMs;
-		}
-		await this.storage.put(LOCKOUT_SLOT, state);
 	}
 
 	/**
@@ -188,6 +169,36 @@ export class RateLimiterDO {
 		await this.storage.put(LOCKOUT_SLOT, state);
 		return { admitted: true };
 	}
+
+	/**
+	 * Atomic KV read-modify-write (#84): reads `kvKey`, applies `patch` (shallow-merged
+	 * over the existing JSON object, or over `{}` if the key doesn't exist yet),
+	 * optionally increments `bumpField` by one, and writes the result back — all inside
+	 * this single DO fetch call, so a concurrent call for the same `kvKey` (same DO id)
+	 * queues behind it instead of racing it in KV directly. `requireExisting` gates
+	 * update-only (reset/revoke: fail if absent) vs create-only (fail if already
+	 * present) callers with one shared code path.
+	 */
+	private async kvMerge(
+		kvKey: string,
+		patch: Record<string, unknown>,
+		requireExisting: boolean,
+		bumpField?: string,
+	): Promise<KvMergeResult> {
+		if (!this.kv) return { ok: false, error: "kvMerge unavailable: no NAV_CACHE binding" };
+		const raw = await this.kv.get(kvKey);
+		if (requireExisting && raw === null) return { ok: false, error: "not found" };
+		if (!requireExisting && raw !== null) return { ok: false, error: "already exists" };
+
+		const current = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+		const merged: Record<string, unknown> = { ...current, ...patch };
+		if (bumpField) {
+			const prev = typeof current[bumpField] === "number" ? (current[bumpField] as number) : 0;
+			merged[bumpField] = prev + 1;
+		}
+		await this.kv.put(kvKey, JSON.stringify(merged));
+		return { ok: true };
+	}
 }
 
 // --- Typed client helpers used by the Worker. Each targets one DO instance keyed by
@@ -219,19 +230,6 @@ export async function isIpRequestAllowed(
 	return allowed;
 }
 
-export async function getLockoutStatus(namespace: DurableObjectNamespace, username: string): Promise<LockoutStatus> {
-	return callDO<LockoutStatus>(namespace, loginKey(username), { op: "lockoutStatus" });
-}
-
-export async function recordLockoutFailure(
-	namespace: DurableObjectNamespace,
-	username: string,
-	maxAttempts: number,
-	windowMs: number,
-): Promise<void> {
-	await callDO(namespace, loginKey(username), { op: "lockoutRecord", maxAttempts, windowMs });
-}
-
 export async function clearLockout(namespace: DurableObjectNamespace, username: string): Promise<void> {
 	await callDO(namespace, loginKey(username), { op: "lockoutClear" });
 }
@@ -248,4 +246,24 @@ export async function admitLoginAttempt(
 	windowMs: number,
 ): Promise<LockoutAdmitResult> {
 	return callDO<LockoutAdmitResult>(namespace, loginKey(username), { op: "lockoutAdmit", maxAttempts, windowMs });
+}
+
+/**
+ * Atomic KV read-modify-write for one account record (#84). Keyed by the account's
+ * own KV key (distinct from the `login:*` id space above), so account mutations and
+ * login-lockout counters for the same user serialise independently of each other.
+ */
+export async function atomicKvMerge(
+	namespace: DurableObjectNamespace,
+	kvKey: string,
+	patch: Record<string, unknown>,
+	options: { requireExisting: boolean; bumpField?: string },
+): Promise<KvMergeResult> {
+	return callDO<KvMergeResult>(namespace, kvKey, {
+		op: "kvMerge",
+		kvKey,
+		patch,
+		requireExisting: options.requireExisting,
+		bumpField: options.bumpField,
+	});
 }

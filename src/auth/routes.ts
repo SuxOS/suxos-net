@@ -10,7 +10,7 @@
 import { timingSafeEqual, verifyPasswordConstantTime } from "./crypto";
 import { recipientIdentity } from "./identity";
 import { buildLogoutCookie, buildSessionCookie, createSessionToken, extractSessionToken, verifySessionToken } from "./session";
-import { admitLoginAttempt, clearFailedAttempts, createAccount, getAccount, resetPassword } from "./store";
+import { admitLoginAttempt, clearFailedAttempts, createAccount, getAccount, resetPassword, revokeSessions } from "./store";
 import { readJsonBodyWithLimit } from "../httpBody";
 
 export interface AuthEnv {
@@ -109,7 +109,7 @@ export async function handleLogin(request: Request, env: AuthEnv): Promise<Respo
 	}
 
 	await clearFailedAttempts(env.RATE_LIMITER, username);
-	const token = await createSessionToken(account.username, env.SESSION_SECRET);
+	const token = await createSessionToken(account.username, env.SESSION_SECRET, account.sessionEpoch ?? 0);
 	return jsonResponse(
 		200,
 		{ ok: true, username: account.username, identity: recipientIdentity(account.username) },
@@ -117,24 +117,36 @@ export async function handleLogin(request: Request, env: AuthEnv): Promise<Respo
 	);
 }
 
-/** POST /logout — clears the session cookie. No server-side session state to revoke
- * (the token is self-contained/signed), so this simply tells the client to drop it;
- * the token itself remains valid until its natural expiry if replayed. */
+/**
+ * POST /logout — clears the caller's own session cookie. This only tells the client
+ * to drop it; the token itself, if a copy of it was ever exfiltrated, remains valid
+ * until its natural expiry OR until the account's sessionEpoch is bumped (#81) via a
+ * password reset or the operator's POST /admin/accounts/revoke-sessions — there is
+ * still no recipient-facing "log out everywhere", only the operator-driven one.
+ */
 export async function handleLogout(request: Request): Promise<Response> {
 	if (request.method !== "POST") return errorResponse(405, { error: "method not allowed, expected POST" }, { Allow: "POST" });
 	return jsonResponse(200, { ok: true }, { "Set-Cookie": buildLogoutCookie() });
 }
 
 /**
- * Verifies the session cookie's signature and expiry. Returns the authenticated
- * username, or null if there is no valid session — callers treat null as
- * unauthenticated (401). Intended to run on every request to a protected route.
+ * Verifies the session cookie's signature and expiry, THEN checks that its embedded
+ * epoch still matches the account's current sessionEpoch (#81) — one extra KV read
+ * per authenticated request, accepted here because it's what makes a password reset
+ * or an explicit "revoke sessions" admin action actually take effect immediately
+ * instead of merely blocking new logins while every already-issued cookie keeps
+ * working for up to 24h more. NAV_CACHE is the same KV namespace already read on
+ * every /login, so this isn't a new dependency, just one more read on the hot path.
+ * Returns the authenticated username, or null if there is no valid session — callers
+ * treat null as unauthenticated (401). Intended to run on every protected request.
  */
 export async function requireSession(request: Request, env: AuthEnv): Promise<string | null> {
 	const token = extractSessionToken(request);
 	if (!token) return null;
 	const payload = await verifySessionToken(token, env.SESSION_SECRET);
 	if (!payload) return null;
+	const account = await getAccount(env.NAV_CACHE, payload.username);
+	if (!account || (account.sessionEpoch ?? 0) !== payload.epoch) return null;
 	return payload.username;
 }
 
@@ -192,7 +204,7 @@ export async function handleAdminCreateAccount(request: Request, env: AuthEnv): 
 	if ("error" in parsed) return parsed.error;
 	const { username, password } = parsed;
 
-	const result = await createAccount(env.NAV_CACHE, username, password);
+	const result = await createAccount(env.RATE_LIMITER, username, password);
 	if (!result.ok) return errorResponse(409, { error: result.error });
 	return jsonResponse(201, { ok: true, username: username.trim().toLowerCase() });
 }
@@ -210,7 +222,55 @@ export async function handleAdminResetPassword(request: Request, env: AuthEnv): 
 	if ("error" in parsed) return parsed.error;
 	const { username, password } = parsed;
 
-	const result = await resetPassword(env.NAV_CACHE, username, password);
+	const result = await resetPassword(env.RATE_LIMITER, username, password);
 	if (!result.ok) return errorResponse(404, { error: result.error });
 	return jsonResponse(200, { ok: true });
+}
+
+/**
+ * POST /admin/accounts/revoke-sessions — operator-only "force logout this recipient"
+ * (#81). Unlike /admin/accounts/reset, this leaves the password untouched: it only
+ * bumps the account's sessionEpoch, so every session token already issued for this
+ * recipient stops verifying on its very next request, regardless of how much of its
+ * 24h natural expiry remains. The real incident-response gap this closes: /logout
+ * (below) only clears the caller's own cookie — a copy an attacker already holds, or
+ * a session on a device the recipient can't reach, keeps working until now.
+ */
+export async function handleAdminRevokeSessions(request: Request, env: AuthEnv): Promise<Response> {
+	if (request.method !== "POST") return errorResponse(405, { error: "method not allowed, expected POST" }, { Allow: "POST" });
+
+	const denied = await assertOperator(request, env);
+	if (denied) return denied;
+
+	const parsedBody = await parseJsonBody(request);
+	if ("error" in parsedBody) return parsedBody.error;
+	const { username } = parsedBody.body;
+	if (typeof username !== "string" || username.trim().length === 0) {
+		return errorResponse(400, { error: "missing or non-string username", field: "username" });
+	}
+
+	const result = await revokeSessions(env.RATE_LIMITER, username);
+	if (!result.ok) return errorResponse(404, { error: result.error });
+	return jsonResponse(200, { ok: true });
+}
+
+/**
+ * POST /logout-everywhere — recipient self-service (#83), NOT operator-only. Requires
+ * a valid session (requireSession), then bumps the CALLER's OWN account's
+ * sessionEpoch via the same revokeSessions primitive the operator's
+ * /admin/accounts/revoke-sessions route uses — invalidating every session token
+ * issued for this account, including the one making this very request, regardless of
+ * its 24h natural expiry. #81 shipped the epoch plumbing end-to-end but only wired an
+ * operator-triggered path; this is the recipient-triggered one #81 called out as
+ * optional/out of scope at the time.
+ */
+export async function handleLogoutEverywhere(request: Request, env: AuthEnv): Promise<Response> {
+	if (request.method !== "POST") return errorResponse(405, { error: "method not allowed, expected POST" }, { Allow: "POST" });
+
+	const username = await requireSession(request, env);
+	if (!username) return unauthorizedResponse();
+
+	const result = await revokeSessions(env.RATE_LIMITER, username);
+	if (!result.ok) return errorResponse(404, { error: result.error });
+	return jsonResponse(200, { ok: true }, { "Set-Cookie": buildLogoutCookie() });
 }
