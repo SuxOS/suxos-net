@@ -109,3 +109,17 @@ already-provisioned `RATE_LIMITER` binding rather than needing a new Durable Obj
 migration. If you add another mutating field to the `Account` record (or any other KV record that can be
 written by more than one caller), reuse `atomicKvMerge` rather than writing a fresh `kv.get`/`kv.put` pair —
 that plain pattern is exactly the bug #84 fixed.
+
+## Issues #67 and #75 are structurally unbuildable by this pipeline, not just hard — stop re-attempting them the same way
+
+Verified 2026-07-21: both have now failed 4 separate batch-build attempts (gates never even reached) because
+neither is a code-writing task this pipeline shape can do. #67 wants a fix inside the reusable workflow that
+generates a batch PR's `Closes #N` list — that logic lives in `SuxOS/.github`, which 404s for the builder
+token (see the `SuxOS/.github` note above); there is nothing to edit in this repo's tree. #75 wants PR #34
+(`feat/real-qa-retrieval`, still `mergeable=CONFLICTING`) rebased and landed — this pipeline can only open new
+PRs against `main`, it cannot push commits onto another open PR's branch. Repeatedly reassigning either to a
+fresh builder run just burns another 22+ comment cycle to rediscover the same 404 / can't-push-to-other-branch
+facts. If you land here again: don't retry the same way — either drop with the same reasoning (releasing the
+claim so it doesn't clog `building`), or, if repeated no-op retries are themselves the problem, flag it to a
+human for an out-of-band fix (org access grant for #67's true fix location, a manual rebase+push for #75)
+rather than looping the pipeline on it again.
