@@ -123,3 +123,14 @@ facts. If you land here again: don't retry the same way — either drop with the
 claim so it doesn't clog `building`), or, if repeated no-op retries are themselves the problem, flag it to a
 human for an out-of-band fix (org access grant for #67's true fix location, a manual rebase+push for #75)
 rather than looping the pipeline on it again.
+
+## #37 and #38 (portal document viewer + annotation layer) are blocked on the same PR #34 foundation as #30/#31/#32
+
+Verified 2026-07-21 (issues #30/#31/#32/#37/#38 triage): PR #34 (`feat/real-qa-retrieval`) is still open with
+`mergeable: CONFLICTING`, so #30/#31/#32 remain not-buildable per the note above. #37 and #38 (portal spec
+Features 2 and 3, `docs/superpowers/specs/2026-07-17-portal-feature-set-design.md`) each say so explicitly in
+their own issue text — #37: "DEPENDS ON: real /api → suxvault wiring (foundation) landing first", #38:
+"DEPENDS ON: Feature 2 (document viewer) + real /api wiring" — i.e. #38 depends on #37 which depends on #30/#31
+which sit unmerged in #34. That makes the whole #30/#31/#32/#37/#38 chain one blocked cluster, not five
+separate ones. Before re-attempting any of them, check whether PR #34 has merged; until then all five drop
+as blocked with the same root cause.
