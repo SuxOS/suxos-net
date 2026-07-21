@@ -66,6 +66,8 @@ export const ADMIN_HTML = `<!doctype html>
       </form>
 
       <div id="accounts-result" class="result" aria-live="polite"></div>
+      <div id="accounts-table" class="table" aria-live="polite"></div>
+      <button id="accounts-load-more" type="button" hidden>Load more</button>
     </section>
 
     <section id="panel-references" class="panel" hidden>
@@ -226,6 +228,7 @@ export const ADMIN_JS = `(function () {
   "use strict";
 
   var TOKEN_KEY = "suxos-admin-token";
+  var accountsCursor = null;
   var referencesCursor = null;
   var auditCursor = null;
 
@@ -282,6 +285,47 @@ export const ADMIN_JS = `(function () {
 
   // --- Accounts tab ---
 
+  function renderAccountsTable(accounts) {
+    var container = document.getElementById("accounts-table");
+    clear(container);
+    if (!accounts || accounts.length === 0) {
+      container.appendChild(el("p", { class: "empty", text: "No accounts yet." }));
+      return;
+    }
+    var table = el("table");
+    var head = el("tr");
+    ["Username", "Created", "Session epoch"].forEach(function (label) {
+      head.appendChild(el("th", { text: label }));
+    });
+    table.appendChild(head);
+    accounts.forEach(function (account) {
+      var row = el("tr");
+      row.appendChild(el("td", { text: account.username }));
+      row.appendChild(el("td", { text: account.createdAt }));
+      row.appendChild(el("td", { text: String(account.sessionEpoch) }));
+      table.appendChild(row);
+    });
+    container.appendChild(table);
+  }
+
+  function loadAccounts(reset) {
+    if (reset) accountsCursor = null;
+    var container = document.getElementById("accounts-table");
+    clear(container);
+    container.appendChild(el("p", { class: "loading", text: "Loading…" }));
+    var params = accountsCursor ? "?cursor=" + encodeURIComponent(accountsCursor) : "";
+    apiFetch("/admin/accounts" + params, { method: "GET" }).then(function (result) {
+      if (!result.ok) {
+        clear(container);
+        container.appendChild(el("p", { class: "error", text: result.data.error || "Could not load accounts." }));
+        return;
+      }
+      renderAccountsTable(result.data.accounts);
+      accountsCursor = result.data.cursor;
+      document.getElementById("accounts-load-more").hidden = !accountsCursor;
+    });
+  }
+
   function bindAccountForms() {
     document.getElementById("create-account-form").addEventListener("submit", function (event) {
       event.preventDefault();
@@ -293,6 +337,10 @@ export const ADMIN_JS = `(function () {
         body: JSON.stringify({ username: username, password: password }),
       }).then(function (result) {
         showResult("accounts-result", result.ok, result.ok ? "Account created: " + result.data.username : (result.data.error || "Could not create account."));
+        if (result.ok) {
+          document.getElementById("create-account-form").reset();
+          loadAccounts(true);
+        }
       });
     });
 
@@ -306,6 +354,7 @@ export const ADMIN_JS = `(function () {
         body: JSON.stringify({ username: username, password: password }),
       }).then(function (result) {
         showResult("accounts-result", result.ok, result.ok ? "Password reset for " + username : (result.data.error || "Could not reset password."));
+        if (result.ok) loadAccounts(true);
       });
     });
 
@@ -318,7 +367,12 @@ export const ADMIN_JS = `(function () {
         body: JSON.stringify({ username: username }),
       }).then(function (result) {
         showResult("accounts-result", result.ok, result.ok ? "Sessions revoked for " + username : (result.data.error || "Could not revoke sessions."));
+        if (result.ok) loadAccounts(true);
       });
+    });
+
+    document.getElementById("accounts-load-more").addEventListener("click", function () {
+      loadAccounts(false);
     });
   }
 
@@ -490,6 +544,7 @@ export const ADMIN_JS = `(function () {
   // --- Tabs & gate ---
 
   var TABS = ["accounts", "references", "audit"];
+  var accountsLoaded = false;
   var referencesLoaded = false;
   var auditLoaded = false;
 
@@ -498,6 +553,10 @@ export const ADMIN_JS = `(function () {
       document.getElementById("panel-" + tab).hidden = tab !== name;
       document.getElementById("tab-" + tab).setAttribute("aria-selected", String(tab === name));
     });
+    if (name === "accounts" && !accountsLoaded) {
+      accountsLoaded = true;
+      loadAccounts(true);
+    }
     if (name === "references" && !referencesLoaded) {
       referencesLoaded = true;
       loadReferences(true);
@@ -523,6 +582,12 @@ export const ADMIN_JS = `(function () {
   function showConsole() {
     document.getElementById("gate").hidden = true;
     document.getElementById("console").hidden = false;
+    // Accounts is the default visible tab (not behind a tab click like
+    // references/audit), so it needs its own load trigger here.
+    if (!accountsLoaded) {
+      accountsLoaded = true;
+      loadAccounts(true);
+    }
   }
 
   function connect(token) {
@@ -544,6 +609,7 @@ export const ADMIN_JS = `(function () {
 
     document.getElementById("disconnect-button").addEventListener("click", function () {
       clearToken();
+      accountsLoaded = false;
       referencesLoaded = false;
       auditLoaded = false;
       showGate(null);
