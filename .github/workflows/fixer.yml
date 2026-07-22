@@ -7,7 +7,7 @@ name: Fixer
 
 on:
   schedule:
-    - cron: "9 10 * * *" # 1/day, offset from sibling repos' fixer.yml crons
+    - cron: "9 10 * * 1" # Fixer Cadence v2: cold-tier weekly sweep
   workflow_dispatch:
 
 jobs:
