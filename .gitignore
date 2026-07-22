@@ -1,3 +1,6 @@
 node_modules/
 .wrangler/
 *.log
+
+# Detached scratch worktrees (parallel-mutator isolation) — never committed
+.scratch-worktrees/
