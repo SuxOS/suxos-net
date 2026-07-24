@@ -5,6 +5,14 @@ loaded — `suxvault` is currently empty structure, which is why scaffolding aga
 safe. Live cutover to real content and real named recipients happens with the user present,
 not before.
 
+> **Superseded (2026-07-23):** §4 "Auth" below describes the original plan — one shared
+> staging identity, per-recipient Cloudflare Access invites deferred. That plan has been
+> superseded: real per-recipient username/password auth has since shipped (see
+> `docs/superpowers/specs/2026-07-17-real-access-and-retrieval-design.md` §1 for the design,
+> and [`docs/api.md`](../api.md) for the live `/login`/`/logout`/session-cookie route
+> surface). §4 is left below for historical context, not deleted — §1-3 framing is still
+> accurate.
+
 ## 1. Purpose
 
 A shareable, access-gated site for a small set of named people in the user's life — care
@@ -36,6 +44,8 @@ guide than a chatbot. Refuses/flags plainly when it can't find a source-backed a
 "Haiku mode" is an optional compact response format.
 
 ## 4. Auth
+
+*Superseded — see the note at the top of this doc.* Original plan, kept for history:
 
 Cloudflare Access, same model as `suxdash`. v1: one shared test/dev identity for staging.
 Per-recipient OAuth invites explicitly deferred — not blocking staging.

@@ -1,8 +1,19 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	// STAGING ONLY. Deployed live at *.workers.dev for testing — safe because suxvault has
-	// no real content yet (empty structure, deliberately) and every response here is
-	// synthetic/stub data. Still no real Cloudflare Access recipients, no custom DNS, no
+	// STAGING ONLY. Deployed live at *.workers.dev for testing — safe because this Worker has
+	// NO BINDING to suxvault (only NAV_CACHE + RATE_LIMITER below) and every response here is
+	// synthetic/stub data from src/demo/demoData.ts.
+	//
+	// The safety argument used to be "suxvault is empty." That is FALSE and was false when it
+	// was written: suxvault holds 341 records under records/health/, including the 105
+	// patient-e-mail records that are — per the workspace CLAUDE.md — the only machine-readable
+	// copy of the MyChart messages (Epic's Communication resource 403s at every linked org).
+	// The real reason this deploy is safe is the absence of a binding, which does not depend on
+	// the source being empty. Anything that later wires suxvault-backed retrieval (see
+	// src/review.ts) is a PHI path from its first commit: real Access recipients, a stated
+	// at-rest class, and never a public *.workers.dev endpoint. See SuxOS/suxos-net#118.
+	//
+	// Still no real Cloudflare Access recipients, no custom DNS, no
 	// suxos.net cutover — those remain a together-step. This name is deliberately distinct
 	// from a future prod Worker name so this staging deploy can never collide with the real
 	// suxos.net cutover. See README.md and docs/design/suxos-net-design.md for the full design.
@@ -12,8 +23,10 @@
 	"compatibility_flags": ["nodejs_compat"],
 	// KV read-through cache for navigator responses, mirroring suxdash's BFF cache pattern
 	// (docs/design/suxdash-command-center-design.md §3). Real staging namespace — safe to
-	// expose live because suxvault holds no real content yet (empty structure only); this
-	// was the deliberate reason for that split. No PHI/PII ever touches this staging KV.
+	// expose live because nothing PHI-bearing is reachable from this Worker to cache: the only
+	// data source wired here is demoData.ts, and there is no suxvault binding (#118). No
+	// PHI/PII ever touches this staging KV — and that must be re-established, not assumed, by
+	// whoever first gives this Worker a real data source.
 	"kv_namespaces": [{ "binding": "NAV_CACHE", "id": "bf133ed9581e43349b14fe736768a763" }],
 	// Atomic rate-limit / lockout counters (#35). KV has no atomic increment, so both
 	// the per-IP request limiter and the per-username login lockout run through this

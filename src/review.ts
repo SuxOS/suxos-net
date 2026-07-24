@@ -6,11 +6,17 @@
  * never-fabricate, structured-error, `withSecurityHeaders` discipline as every other
  * route in this Worker.
  *
- * suxvault is still empty, so this endpoint has no server-side record to pull claims
- * from — the caller passes the claims directly in the request body. Once real
+ * This Worker has no binding to suxvault, so this endpoint has no server-side record to
+ * pull claims from — the caller passes the claims directly in the request body. Once real
  * suxvault-backed retrieval lands, that becomes the source of `claims` instead of the
  * request body, but this input contract (a bounded array of claims) stays the same
  * either way.
+ *
+ * That retrieval is a PHI path, not a plumbing change (#118). suxvault is NOT an empty
+ * skeleton — it holds 341 records under records/health/, 105 of them patient-e-mail
+ * records that are the only machine-readable copy of the MyChart messages. Wiring it in
+ * means real Cloudflare Access recipients, a stated at-rest class, and no public
+ * *.workers.dev endpoint, from the first commit rather than as a follow-up.
  *
  * Trusted references are NOT part of the request body (#19 runtime guard): they are
  * sourced exclusively from the curated store (src/references/store.ts), which is
