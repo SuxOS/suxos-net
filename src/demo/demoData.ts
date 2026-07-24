@@ -2,7 +2,9 @@
 //
 // This entire file is invented content for a made-up persona ("Jordan Rivers") used to
 // demonstrate the navigator/inconsistencyFlagger/citationIntegrity pipeline end-to-end
-// without touching suxvault (which stays deliberately empty — design doc §1/§5).
+// without touching suxvault (which this Worker has no binding to — design doc §1/§5).
+// suxvault is NOT empty: it holds 341 health records incl. 105 patient-e-mails (#118).
+// Keeping this module the only data source is what makes the staging deploy safe.
 // Every name, date, event, claim, citation id, and drug name below is fabricated.
 // None of it resembles the actual user's real history, medications, or providers.
 

@@ -37,7 +37,7 @@ export function isTimeScope(value: string): value is TimeScope {
 	return (TIME_SCOPE_VALUES as readonly string[]).includes(value);
 }
 
-// suxvault is currently empty structure (no real content) — these are obviously
+// These are obviously
 // synthetic placeholder entries, not a preview of real record data.
 const STUB_ENTRIES: NavigatorEntry[] = [
 	{
